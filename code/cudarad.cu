@@ -45,6 +45,38 @@ static __device__ float3 safe_normalized(const float3& v) {
     return v / vLen;
 }
 
+static __device__ inline float3 sr_zero3() {
+    return make_float3(0.0f, 0.0f, 0.0f);
+}
+
+static __device__ inline float3 sr_add(float3 a, float3 b) {
+    return make_float3(a.x + b.x, a.y + b.y, a.z + b.z);
+}
+
+static __device__ inline float3 sr_mul(float3 a, float s) {
+    return make_float3(a.x * s, a.y * s, a.z * s);
+}
+
+static __device__ inline float3 sr_mul(float3 a, float3 b) {
+    return make_float3(a.x * b.x, a.y * b.y, a.z * b.z);
+}
+
+static __device__ inline int sr_clampi(int v, int lo, int hi) {
+    return max(lo, min(v, hi));
+}
+
+static __device__ inline float tex_light_to_linear(uint8_t c, int8_t exponent) {
+    return float(c) * exp2f(float(exponent));
+}
+
+static __device__ inline float3 decode_rgbexp32(BSP::RGBExp32 c) {
+    return make_float3(
+        tex_light_to_linear(c.r, c.exp),
+        tex_light_to_linear(c.g, c.exp),
+        tex_light_to_linear(c.b, c.exp)
+    );
+}
+
 namespace CUDARAD {
     static std::unique_ptr<RayTracer::CUDARayTracer> g_pRayTracer;
     static __device__ RayTracer::CUDARayTracer* g_pDeviceRayTracer;
@@ -90,37 +122,7 @@ namespace CUDARAD {
 
 namespace LeafAmbient {
 
-    static __device__ inline float3 sr_zero3() {
-        return make_float3(0.0f, 0.0f, 0.0f);
-    }
-
-    static __device__ inline float3 sr_add(float3 a, float3 b) {
-        return make_float3(a.x + b.x, a.y + b.y, a.z + b.z);
-    }
-
-    static __device__ inline float3 sr_mul(float3 a, float s) {
-        return make_float3(a.x * s, a.y * s, a.z * s);
-    }
-
-    static __device__ inline float3 sr_mul(float3 a, float3 b) {
-        return make_float3(a.x * b.x, a.y * b.y, a.z * b.z);
-    }
-
-    static __device__ inline int sr_clampi(int v, int lo, int hi) {
-        return max(lo, min(v, hi));
-    }
-
-    static __device__ inline float tex_light_to_linear(uint8_t c, int8_t exponent) {
-        return float(c) * exp2f(float(exponent));
-    }
-
-    static __device__ inline float3 decode_rgbexp32(BSP::RGBExp32 c) {
-        return make_float3(
-            tex_light_to_linear(c.r, c.exp),
-            tex_light_to_linear(c.g, c.exp),
-            tex_light_to_linear(c.b, c.exp)
-        );
-    }
+    
 
     static __device__ const float3 BOX_DIRECTIONS[NUM_CUBE_SIDES] = {
         {  1.0f,  0.0f,  0.0f },
@@ -930,7 +932,7 @@ namespace DirectLighting {
                 //}
             }
 
-            const float EPSILON = 1e-3f;
+            const float EPSILON = 0.0325f;
 
             // Nudge the sample position towards the light slightly, to avoid
             // colliding with triangles that directly contain the sample
@@ -971,13 +973,42 @@ namespace DirectLighting {
         return result;
     }
 
+    static __device__ inline float sr_clampf(float v, float lo, float hi)
+    {
+        return fmaxf(lo, fminf(v, hi));
+    }
+
+    static __device__ inline float3 safe_luxel_pos(
+        CUDARAD::FaceInfo& faceInfo,
+        float s,
+        float t
+    ) {
+        // Не семплим ровно border luxel.
+        // 0.5f = центр luxel'а, сильно уменьшает leaks на seams.
+        float ss = sr_clampf(s + 0.5f, 0.5f, float(faceInfo.lightmapWidth) - 1.5f);
+        float tt = sr_clampf(t + 0.5f, 0.5f, float(faceInfo.lightmapHeight) - 1.5f);
+
+        float3 p = faceInfo.xyz_from_st(ss, tt);
+
+        float3 n = faceInfo.faceNorm;
+        if (faceInfo.face.side)
+            n = make_float3(-n.x, -n.y, -n.z);
+
+        // Маленький push с поверхности, чтобы trace не стартовал ровно на plane/edge.
+        p.x += n.x * 0.25f;
+        p.y += n.y * 0.25f;
+        p.z += n.z * 0.25f;
+
+        return p;
+    }
+
     __device__ float3 sample_at(
             CUDABSP::CUDABSP& cudaBSP,
             CUDARAD::FaceInfo& faceInfo,
             float s, float t
             ) {
 
-        float3 samplePos = faceInfo.xyz_from_st(s, t);
+        float3 samplePos = safe_luxel_pos(faceInfo, s, t);
         return sample_at(cudaBSP, samplePos, faceInfo.faceNorm);
     }
 
@@ -1527,6 +1558,274 @@ namespace AmbientLighting {
 }
 
 
+namespace BouncedLighting
+{
+    static __device__ const int PT_SPP = 16;
+    static __device__ const int PT_DEPTH = 2;
+    static __device__ const float PT_EPSILON = 0.5f;
+    static __device__ const float PT_BOUNCE_SCALE = 1.0f;
+    static __device__ const float PT_MAX_LIGHT = 4096.0f;
+
+    static __device__ inline uint32_t hash_u32(uint32_t x)
+    {
+        x ^= x >> 17;
+        x *= 0xed5ad4bbU;
+        x ^= x >> 11;
+        x *= 0xac4c1b51U;
+        x ^= x >> 15;
+        x *= 0x31848babU;
+        x ^= x >> 14;
+        return x;
+    }
+
+    static __device__ inline float rand01(uint32_t& state)
+    {
+        state = hash_u32(state);
+        return float(state & 0x00ffffffU) / float(0x01000000U);
+    }
+
+    static __device__ inline float3 safe_norm3(float3 v)
+    {
+        float l = len(v);
+        if (l <= 1e-20f)
+            return make_float3(0.0f, 0.0f, 1.0f);
+        return v / l;
+    }
+
+    static __device__ inline float3 cosine_hemisphere(float3 n, uint32_t& rng)
+    {
+        float u1 = rand01(rng);
+        float u2 = rand01(rng);
+
+        float r = sqrtf(u1);
+        float phi = 2.0f * PI * u2;
+
+        float x = r * cosf(phi);
+        float y = r * sinf(phi);
+        float z = sqrtf(fmaxf(0.0f, 1.0f - u1));
+
+        float3 up = fabsf(n.z) < 0.999f
+            ? make_float3(0.0f, 0.0f, 1.0f)
+            : make_float3(1.0f, 0.0f, 0.0f);
+
+        float3 tangent = safe_norm3(cross(up, n));
+        float3 bitangent = cross(n, tangent);
+
+        return safe_norm3(tangent * x + bitangent * y + n * z);
+    }
+
+    static __device__ inline float3 face_reflectivity(
+        const CUDABSP::CUDABSP& cudaBSP,
+        int faceId
+    ) {
+        if (faceId < 0 || faceId >= cudaBSP.numFaces)
+            return make_float3(0.0f);
+
+        const BSP::DFace& face = cudaBSP.faces[faceId];
+
+        if (face.texInfo < 0 || face.texInfo >= cudaBSP.numTexInfos)
+            return make_float3(0.0f);
+
+        const BSP::TexInfo& texInfo = cudaBSP.texInfos[face.texInfo];
+
+        if (texInfo.texData < 0 || texInfo.texData >= cudaBSP.numTexDatas)
+            return make_float3(0.5f);
+
+        const BSP::DTexData& texData = cudaBSP.texDatas[texInfo.texData];
+
+        return make_float3(
+            texData.reflectivity.x,
+            texData.reflectivity.y,
+            texData.reflectivity.z
+        );
+    }
+
+    static __device__ inline float3 clamp_light(float3 c)
+    {
+        c.x = fminf(fmaxf(c.x, 0.0f), PT_MAX_LIGHT);
+        c.y = fminf(fmaxf(c.y, 0.0f), PT_MAX_LIGHT);
+        c.z = fminf(fmaxf(c.z, 0.0f), PT_MAX_LIGHT);
+        return c;
+    }
+
+    static __device__ float3 sample_indirect_path(
+        CUDABSP::CUDABSP& cudaBSP,
+        float3 start,
+        float3 normal,
+        int startFaceId,
+        float3 skyAmbient,
+        uint32_t& rng
+    ) {
+        float3 radiance = make_float3(0.0f);
+        float3 throughput = face_reflectivity(cudaBSP, startFaceId);
+
+        float3 rayOrigin = start + normal * PT_EPSILON;
+        float3 rayDir = cosine_hemisphere(normal, rng);
+
+        for (int depth = 0; depth < PT_DEPTH; ++depth)
+        {
+            RayTracer::RayHit hit =
+                CUDARAD::g_pDeviceRayTracer->trace_closest(
+                    rayOrigin,
+                    rayOrigin + rayDir * 32768.0f
+                );
+
+            if (!hit.hit)
+                break;
+
+            int hitFaceId = int(hit.faceId);
+
+            float2 luxel;
+            float3 hitLight;
+
+            if (LeafAmbient::world_to_face_luxel(cudaBSP, hitFaceId, hit.position, luxel))
+            {
+                hitLight = LeafAmbient::compute_lightmap_color_from_luxel(
+                    cudaBSP,
+                    hitFaceId,
+                    luxel,
+                    skyAmbient
+                );
+            }
+            else
+            {
+                hitLight = LeafAmbient::compute_lightmap_color_from_average_fallback(
+                    cudaBSP,
+                    hitFaceId,
+                    skyAmbient
+                );
+            }
+
+            radiance += sr_mul(throughput, hitLight);
+
+            const BSP::DFace& hitFace = cudaBSP.faces[hitFaceId];
+            const BSP::DPlane& hitPlane = cudaBSP.planes[hitFace.planeNum];
+
+            float3 hitNormal = make_float3(
+                hitPlane.normal.x,
+                hitPlane.normal.y,
+                hitPlane.normal.z
+            );
+
+            if (hitFace.side)
+                hitNormal *= -1.0f;
+
+            hitNormal = safe_norm3(hitNormal);
+
+            throughput = sr_mul(throughput, face_reflectivity(cudaBSP, hitFaceId));
+
+            float rr = fmaxf(throughput.x, fmaxf(throughput.y, throughput.z));
+            rr = fminf(fmaxf(rr, 0.05f), 0.95f);
+
+            if (depth > 0)
+            {
+                if (rand01(rng) > rr)
+                    break;
+
+                throughput /= rr;
+            }
+
+            rayOrigin = hit.position + hitNormal * PT_EPSILON;
+            rayDir = cosine_hemisphere(hitNormal, rng);
+        }
+
+        return radiance;
+    }
+
+    __global__ void map_faces(
+        CUDABSP::CUDABSP* pCudaBSP,
+        size_t* pFacesCompleted
+    ) {
+        bool primaryThread = (threadIdx.x == 0 && threadIdx.y == 0);
+
+        if (pCudaBSP->tag != CUDABSP::TAG)
+        {
+            if (primaryThread)
+                printf("Invalid CUDABSP Tag: %x\n", pCudaBSP->tag);
+            return;
+        }
+
+        __shared__ CUDARAD::FaceInfo faceInfo;
+        __shared__ float3 skyAmbient;
+
+        if (primaryThread)
+        {
+            faceInfo = CUDARAD::FaceInfo(*pCudaBSP, blockIdx.x);
+            skyAmbient = LeafAmbient::find_sky_ambient(*pCudaBSP);
+        }
+
+        __syncthreads();
+
+        if (faceInfo.face.lightOffset < 0)
+        {
+            if (primaryThread)
+            {
+                atomicAdd(reinterpret_cast<unsigned long long*>(pFacesCompleted), 1ULL);
+                __threadfence_system();
+            }
+            return;
+        }
+
+        for (size_t i = threadIdx.y; i < faceInfo.lightmapHeight; i += blockDim.y)
+        {
+            for (size_t j = threadIdx.x; j < faceInfo.lightmapWidth; j += blockDim.x)
+            {
+                size_t s = j;
+                size_t t = i;
+
+                float3 samplePos = faceInfo.xyz_from_st(float(s), float(t));
+                float3 sampleNormal = faceInfo.faceNorm;
+
+                if (faceInfo.face.side)
+                    sampleNormal *= -1.0f;
+
+                sampleNormal = safe_norm3(sampleNormal);
+
+                uint32_t rng =
+                    hash_u32(
+                        uint32_t(blockIdx.x * 9781u) ^
+                        uint32_t(s * 6271u) ^
+                        uint32_t(t * 7919u) ^
+                        0x1234abcdU
+                    );
+
+                float3 indirect = make_float3(0.0f);
+
+                for (int sample = 0; sample < PT_SPP; ++sample)
+                {
+                    indirect += sample_indirect_path(
+                        *pCudaBSP,
+                        samplePos,
+                        sampleNormal,
+                        int(faceInfo.faceIndex),
+                        skyAmbient,
+                        rng
+                    );
+                }
+
+                indirect /= float(PT_SPP);
+                indirect *= PT_BOUNCE_SCALE;
+                indirect = clamp_light(indirect);
+
+                size_t sampleIndex = t * faceInfo.lightmapWidth + s;
+                size_t lightmapIndex = faceInfo.lightmapStartIndex + sampleIndex;
+
+                pCudaBSP->lightSamples[lightmapIndex] += indirect;
+            }
+        }
+
+        __syncthreads();
+
+        if (primaryThread)
+        {
+            atomicAdd(reinterpret_cast<unsigned long long*>(pFacesCompleted), 1ULL);
+            __threadfence_system();
+        }
+    }
+}
+
+
+
 namespace CUDARAD {
     void init(BSP::BSP& bsp) {
         std::cout << "Setting up ray-trace acceleration structure... "
@@ -1546,7 +1845,7 @@ namespace CUDARAD {
         for (const BSP::Face& face : bsp.get_faces()) {
             int32_t flags = face.get_texinfo().flags;
 
-            if (flags & BSP::SURF_NODRAW) continue;
+            //if (flags & BSP::SURF_NODRAW) continue;
             if (flags & BSP::SURF_SKY) continue;
             if (flags & BSP::SURF_TRANS) continue;
             if (flags & BSP::SURF_TRIGGER) continue;
@@ -1783,20 +2082,6 @@ namespace CUDARAD {
         std::cout << "Done! (" << time << " ms)" << std::endl;
     }
 
-    void bounce_lighting(BSP::BSP& bsp, CUDABSP::CUDABSP* pCudaBSP) {
-        using Clock = std::chrono::high_resolution_clock;
-
-        auto start = Clock::now();
-
-        auto end = Clock::now();
-        std::chrono::milliseconds ms
-            = std::chrono::duration_cast<std::chrono::milliseconds>(
-                end - start
-            );
-
-        std::cout << "Done! (" << ms.count() << " ms)" << std::endl;
-    }
-
     void compute_ambient_lighting(CUDABSP::CUDABSP* pCudaBSP) {
         using Clock = std::chrono::high_resolution_clock;
 
@@ -1833,5 +2118,104 @@ namespace CUDARAD {
     void compute_leaf_ambient(CUDABSP::CUDABSP* pCudaBSP)
     {
         LeafAmbient::run(pCudaBSP);
+    }
+
+    void bounce_lighting(BSP::BSP& bsp, CUDABSP::CUDABSP* pCudaBSP)
+    {
+        volatile size_t* pFacesCompleted;
+
+        CUDA_CHECK_ERROR(
+            cudaHostAlloc(
+                &pFacesCompleted,
+                sizeof(size_t),
+                cudaHostAllocMapped
+            )
+        );
+
+        *pFacesCompleted = 0;
+
+        volatile size_t* pDeviceFacesCompleted;
+
+        CUDA_CHECK_ERROR(
+            cudaHostGetDevicePointer(
+                const_cast<size_t**>(&pDeviceFacesCompleted),
+                const_cast<size_t*>(pFacesCompleted),
+                0
+            )
+        );
+
+        const size_t BLOCK_WIDTH = 8;
+        const size_t BLOCK_HEIGHT = 8;
+
+        size_t numFaces = bsp.get_faces().size();
+
+        dim3 blockDim(BLOCK_WIDTH, BLOCK_HEIGHT);
+
+        std::cout
+            << "Launching path traced bounce lighting: "
+            << numFaces * BLOCK_WIDTH * BLOCK_HEIGHT
+            << " threads ("
+            << numFaces
+            << " faces, "
+            << BouncedLighting::PT_SPP
+            << " spp, depth "
+            << BouncedLighting::PT_DEPTH
+            << ")..."
+            << std::endl;
+
+        cudaEvent_t startEvent;
+        cudaEvent_t stopEvent;
+
+        CUDA_CHECK_ERROR(cudaEventCreate(&startEvent));
+        CUDA_CHECK_ERROR(cudaEventCreate(&stopEvent));
+        CUDA_CHECK_ERROR(cudaEventRecord(startEvent));
+
+        KERNEL_LAUNCH(
+            BouncedLighting::map_faces,
+            numFaces,
+            blockDim,
+            pCudaBSP,
+            const_cast<size_t*>(pDeviceFacesCompleted)
+        );
+
+        flush_wddm_queue();
+
+        size_t lastFacesCompleted = 0;
+        size_t facesCompleted;
+
+        do
+        {
+            CUDA_CHECK_ERROR(cudaPeekAtLastError());
+
+            facesCompleted = *pFacesCompleted;
+
+            if (facesCompleted > lastFacesCompleted)
+            {
+                std::cout
+                    << "  "
+                    << facesCompleted
+                    << "/"
+                    << numFaces
+                    << " faces bounced..."
+                    << std::endl;
+            }
+
+            lastFacesCompleted = facesCompleted;
+
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        } while (facesCompleted < numFaces);
+
+        CUDA_CHECK_ERROR(cudaEventRecord(stopEvent));
+        CUDA_CHECK_ERROR(cudaDeviceSynchronize());
+
+        float time;
+        CUDA_CHECK_ERROR(cudaEventElapsedTime(&time, startEvent, stopEvent));
+
+        CUDA_CHECK_ERROR(cudaEventDestroy(startEvent));
+        CUDA_CHECK_ERROR(cudaEventDestroy(stopEvent));
+
+        cudaFreeHost(const_cast<size_t*>(pFacesCompleted));
+
+        std::cout << "Done! (" << time << " ms)" << std::endl;
     }
 }

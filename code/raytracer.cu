@@ -788,11 +788,10 @@ namespace RayTracer {
                         if (tri.flags & BSP::SURF_SKY)
                             continue;
 
-                        if (tri.flags & BSP::SURF_NODRAW)
+                        if ((tri.flags & BSP::SURF_TRANS) && !(tri.flags & BSP::SURF_NODRAW)) {
+                            // Skip translucent faces, but keep nodraw faces.
                             continue;
-
-                        if (tri.flags & BSP::SURF_TRANS)
-                            continue;
+                        }
 
                         // The M-T intersection algorithm uses CCW vertex
                         // winding, but Source uses CW winding. So, we need to

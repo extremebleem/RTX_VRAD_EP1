@@ -120,10 +120,10 @@ int main(int argc, char** argv) {
     //std::cout << "Done!" << std::endl;
 
     std::cout << "Run direct lighting antialiasing pass..." << std::endl;
-    //CUDARAD::antialias_direct_lighting(*pBSP, pCudaBSP);
+    CUDARAD::antialias_direct_lighting(*pBSP, pCudaBSP);
 
-    //std::cout << "Compute light bounces..." << std::endl;
-    //CUDARAD::bounce_lighting(*pBSP, pCudaBSP);
+    std::cout << "Compute light bounces..." << std::endl;
+    CUDARAD::bounce_lighting(*pBSP, pCudaBSP);
 
     std::cout << "Compute ambient lighting..." << std::endl;
     CUDARAD::compute_leaf_ambient(pCudaBSP);
