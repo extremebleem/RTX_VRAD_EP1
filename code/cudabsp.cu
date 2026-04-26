@@ -81,25 +81,45 @@
 
 
 namespace CUDABSP {
+    __device__ int rgbexp32_calc_exponent(float in) {
+        int power = 0;
+
+        if (in != 0.0f) {
+            while (in > 255.0f) {
+                power += 1;
+                in *= 0.5f;
+            }
+
+            while (in < 127.0f) {
+                power -= 1;
+                in *= 2.0f;
+            }
+        }
+
+        return power;
+    }
+
     __device__ BSP::RGBExp32 rgbexp32_from_float3(float3 color) {
         color.x = fmaxf(color.x, 0.0f);
         color.y = fmaxf(color.y, 0.0f);
         color.z = fmaxf(color.z, 0.0f);
 
         float maxColor = fmaxf(color.x, fmaxf(color.y, color.z));
-        if (maxColor <= 1e-20f) {
-            return BSP::RGBExp32 { 0, 0, 0, 0 };
-        }
 
-        int exponent;
-        frexpf(maxColor, &exponent);
+        int exponent = rgbexp32_calc_exponent(maxColor);
 
-        float scale = 255.0f / ldexpf(1.0f, exponent);
+        exponent = max(-128, min(127, exponent));
 
-        return BSP::RGBExp32 {
-            static_cast<uint8_t>(min(255, max(0, int(color.x * scale + 0.5f)))),
-            static_cast<uint8_t>(min(255, max(0, int(color.y * scale + 0.5f)))),
-            static_cast<uint8_t>(min(255, max(0, int(color.z * scale + 0.5f)))),
+        float scalar = powf(2.0f, -float(exponent));
+
+        color.x = fminf(color.x * scalar, 255.0f);
+        color.y = fminf(color.y * scalar, 255.0f);
+        color.z = fminf(color.z * scalar, 255.0f);
+
+        return BSP::RGBExp32{
+            static_cast<uint8_t>(color.x),
+            static_cast<uint8_t>(color.y),
+            static_cast<uint8_t>(color.z),
             static_cast<int8_t>(exponent)
         };
     }
@@ -108,9 +128,9 @@ namespace CUDABSP {
         float scale = std::ldexp(1.0f, sample.exp);
 
         return make_float3(
-            static_cast<float>(sample.r) * scale,
-            static_cast<float>(sample.g) * scale,
-            static_cast<float>(sample.b) * scale
+            float(sample.r) * scale,
+            float(sample.g) * scale,
+            float(sample.b) * scale
         );
     }
 

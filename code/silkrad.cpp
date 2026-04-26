@@ -91,7 +91,7 @@ int main(int argc, char** argv) {
         ti.flags &= ~BSP::SURF_BUMPLIGHT;
     }
 
-    //pBSP->build_worldlights();
+    pBSP->build_worldlights();
 
     print_cudainfo();
 
@@ -106,7 +106,7 @@ int main(int argc, char** argv) {
     std::cout << "*** Start RAD! ***" << std::endl;
 
     std::cout << "Compute direct lighting..." << std::endl;
-    //CUDARAD::compute_direct_lighting(*pBSP, pCudaBSP);
+    CUDARAD::compute_direct_lighting(*pBSP, pCudaBSP);
 
     //std::cout << "Run lightmap FXAA passes..." << std::endl;
     //const size_t NUM_FXAA_PASSES = 5;
@@ -114,7 +114,7 @@ int main(int argc, char** argv) {
     //    std::cout << "    Pass "
     //        << i + 1 << "/" << NUM_FXAA_PASSES << "..."
     //        << std::endl;
-
+    //
     //    CUDAFXAA::antialias_lightsamples(pCudaBSP);
     //}
     //std::cout << "Done!" << std::endl;
@@ -129,7 +129,7 @@ int main(int argc, char** argv) {
     CUDARAD::compute_leaf_ambient(pCudaBSP);
 
     std::cout << "Convert light samples to RGBExp32..." << std::endl;
-    //CUDABSP::convert_lightsamples(pCudaBSP);
+    CUDABSP::convert_lightsamples(pCudaBSP);
 
     std::cout << "Update host BSP data..." << std::endl;
     CUDABSP::update_bsp(*pBSP, pCudaBSP);

@@ -73,18 +73,37 @@ namespace BSP {
 
         if (isHDR) {
             load_lump(file, LUMP_FACES_HDR, m_dFaces);
-            load_lump(file, LUMP_LIGHTING_HDR, m_lightSamples);
         }
-        
         if (m_dFaces.empty()) {
             load_lump(file, LUMP_FACES, m_dFaces);
         }
 
+        if (isHDR) {
+            load_lump(file, LUMP_LIGHTING_HDR, m_lightSamples);
+        }
         if (m_lightSamples.empty()) {
             load_lump(file, LUMP_LIGHTING, m_lightSamples);
         }
 
         set_fullbright(m_lightSamples.empty());
+
+        if (!is_fullbright()) {
+            if (isHDR) {
+                load_lump(
+                    file,
+                    LUMP_LEAF_AMBIENT_LIGHTING_HDR,
+                    m_ambientLightSamples
+                );
+            }
+
+            if (m_ambientLightSamples.empty()) {
+                load_lump(
+                    file,
+                    LUMP_LEAF_AMBIENT_LIGHTING,
+                    m_ambientLightSamples
+                );
+            }
+        }
 
         load_lump(file, LUMP_TEXINFO, m_texInfos);
         load_lump(file, LUMP_TEXDATA, m_texDatas);
@@ -94,9 +113,9 @@ namespace BSP {
 
             m_faces.push_back(Face(*this, faceData));
 
-            Face& face = m_faces.back();
-
             if (is_fullbright()) {
+                Face& face = m_faces.back();
+
                 // Average lighting entry
                 m_lightSamples.push_back(RGBExp32 {0, 0, 0, 0});
 
@@ -113,30 +132,6 @@ namespace BSP {
 
         load_lump(file, LUMP_NODES, m_nodes);
         load_lump(file, LUMP_LEAFS, m_leaves);
-
-        if (!is_fullbright()) {
-            /*load_lump(
-                file,
-                LUMP_LIGHTMAPPAGES,
-                m_ambientLightIndices
-            );*/
-
-           if (isHDR) {
-                load_lump(
-                    file,
-                    LUMP_LEAF_AMBIENT_LIGHTING_HDR,
-                    m_ambientLightSamples
-                );
-            }
-
-            if (m_ambientLightSamples.empty()) {
-                load_lump(
-                    file,
-                    LUMP_LEAF_AMBIENT_LIGHTING,
-                    m_ambientLightSamples
-                );
-            }
-        }
 
         std::vector<char> entData;
         load_lump(file, LUMP_ENTITIES, entData);
@@ -834,7 +829,7 @@ namespace BSP {
     }
 
     void BSP::init_ambient_samples(void) {
-        m_ambientLightSamples.clear();
+        /*m_ambientLightSamples.clear();
         m_ambientLightSamples.resize(m_leaves.size());
 
         for (size_t leafId = 0; leafId < m_leaves.size(); ++leafId) {
@@ -848,7 +843,7 @@ namespace BSP {
 
             if (leaf.contents & CONTENTS_SOLID)
                 continue;
-        }
+        }*/
     }
 
 

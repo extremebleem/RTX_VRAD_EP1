@@ -308,13 +308,13 @@ namespace LeafAmbient {
     }
 
     static __device__ float3 find_sky_ambient(
-            const CUDABSP::CUDABSP& cudaBSP
-            ) {
-        for (size_t i=0; i<cudaBSP.numWorldLights; ++i) {
+        const CUDABSP::CUDABSP& cudaBSP
+    ) {
+        for (size_t i = 0; i < cudaBSP.numWorldLights; ++i) {
             const BSP::DWorldLight& light = cudaBSP.worldLights[i];
 
             if (light.type == BSP::EMIT_SKYAMBIENT && light.style == 0) {
-                return make_float3(light.intensity);
+                return make_float3(light.intensity) / 255.0f;
             }
         }
 
@@ -468,9 +468,6 @@ namespace LeafAmbient {
             return sr_zero3();
         }
 
-        // SDK uses +1:
-        //   int smax = face.m_LightmapTextureSizeInLuxels[0] + 1;
-        //   int tmax = face.m_LightmapTextureSizeInLuxels[1] + 1;
         int smax = face.lightmapTextureSizeInLuxels[0] + 1;
         int tmax = face.lightmapTextureSizeInLuxels[1] + 1;
 
@@ -489,13 +486,11 @@ namespace LeafAmbient {
 
         float3 colorSum = sr_zero3();
 
-        for (int map = 0; map < MAX_LIGHTSTYLES; ++map) {
-            if (face.styles[map] == 255)
-                break;
-
+        for (int map = 0; map < MAX_LIGHTSTYLES && face.styles[map] != 255; ++map) {
             int sampleIndex = base + map * stylePlaneSize + luxelIndex;
 
             float3 color = cudaBSP.lightSamples[sampleIndex];
+            
             color = compute_ambient_from_surface(cudaBSP, faceId, skyAmbient, color);
             colorSum = sr_add(colorSum, color);
         }
@@ -545,7 +540,7 @@ namespace LeafAmbient {
         float intensity = fmaxf(
             light.intensity.x,
             fmaxf(light.intensity.y, light.intensity.z)
-        );
+        ) / 255.f;
 
         return intensity * inv_r_squared(make_float3(0.0f, 0.0f, 512.0f))
             < WORLD_LIGHT_MIN_EMIT_SURFACE;
@@ -595,8 +590,7 @@ namespace LeafAmbient {
                 continue;
             }
 
-            if (!(light.flags & DWL_FLAGS_INAMBIENTCUBE)
-                    && !is_leaf_ambient_surface_light(light)) {
+            if (!(light.flags & DWL_FLAGS_INAMBIENTCUBE)) { // && !is_leaf_ambient_surface_light(light)
                 continue;
             }
 
@@ -627,7 +621,7 @@ namespace LeafAmbient {
                 continue;
             }
 
-            float3 intensity = make_float3(light.intensity);
+            float3 intensity = make_float3(light.intensity) / 255.0f;
 
             for (int side=0; side<NUM_CUBE_SIDES; ++side) {
                 float directionScale = dot(BOX_DIRECTIONS[side], deltaNormal);
@@ -680,59 +674,77 @@ namespace LeafAmbient {
         add_emit_surface_lights(cudaBSP, start, lightBoxColor);
     }
 
-    __global__ void compute_leaf_ambient(CUDABSP::CUDABSP* pCudaBSP) {
+    __global__ void compute_leaf_ambient(
+        CUDABSP::CUDABSP* pCudaBSP,
+        size_t* pLeavesCompleted
+    ) {
         size_t leafIndex = blockIdx.x * blockDim.x + threadIdx.x;
 
-        if (leafIndex >= pCudaBSP->numLeaves
-                || leafIndex >= pCudaBSP->numAmbientLightSamples) {
+        if (leafIndex >= pCudaBSP->numLeaves)
+        {
             return;
         }
 
         BSP::CompressedLightCube out;
 
-        for (int side=0; side<NUM_CUBE_SIDES; ++side) {
-            out.color[side] = BSP::RGBExp32 { 0, 0, 0, 0 };
+        for (int side = 0; side < NUM_CUBE_SIDES; ++side) {
+            out.color[side] = BSP::RGBExp32{ 0, 0, 0, 0 };
         }
 
         const BSP::DLeaf& leaf = pCudaBSP->leaves[leafIndex];
 
-        if (leaf.contents & BSP::CONTENTS_SOLID) {
-            pCudaBSP->ambientLightSamples[leafIndex] = out;
-            return;
-        }
+        if (!(leaf.contents & BSP::CONTENTS_SOLID)) {
+            float3 center = make_float3(
+                (float(leaf.mins[0]) + float(leaf.maxs[0])) * 0.5f,
+                (float(leaf.mins[1]) + float(leaf.maxs[1])) * 0.5f,
+                (float(leaf.mins[2]) + float(leaf.maxs[2])) * 0.5f
+            );
 
-        float3 center = make_float3(
-            (static_cast<float>(leaf.mins[0])
-                + static_cast<float>(leaf.maxs[0])) * 0.5f,
-            (static_cast<float>(leaf.mins[1])
-                + static_cast<float>(leaf.maxs[1])) * 0.5f,
-            (static_cast<float>(leaf.mins[2])
-                + static_cast<float>(leaf.maxs[2])) * 0.5f
-        );
+            float3 skyAmbient = find_sky_ambient(*pCudaBSP);
+            float3 cube[NUM_CUBE_SIDES];
 
-        float3 skyAmbient = find_sky_ambient(*pCudaBSP);
-        float3 cube[NUM_CUBE_SIDES];
+            compute_ambient_from_spherical_samples(
+                *pCudaBSP, center, skyAmbient, cube
+            );
 
-        compute_ambient_from_spherical_samples(
-            *pCudaBSP, center, skyAmbient, cube
-        );
-
-        for (int side=0; side<NUM_CUBE_SIDES; ++side) {
-            out.color[side] = CUDABSP::rgbexp32_from_float3(cube[side]);
+            for (int side = 0; side < NUM_CUBE_SIDES; ++side) {
+                out.color[side] = CUDABSP::rgbexp32_from_float3(cube[side]);
+            }
         }
 
         pCudaBSP->ambientLightSamples[leafIndex] = out;
+
+        atomicAdd(
+            reinterpret_cast<unsigned long long*>(pLeavesCompleted),
+            1ULL
+        );
     }
 
     void run(CUDABSP::CUDABSP* pCudaBSP) {
         CUDABSP::CUDABSP cudaBSP;
 
-        CUDA_CHECK_ERROR(
-            cudaMemcpy(
-                &cudaBSP, pCudaBSP, sizeof(CUDABSP::CUDABSP),
-                cudaMemcpyDeviceToHost
-            )
-        );
+        CUDA_CHECK_ERROR(cudaMemcpy(
+            &cudaBSP,
+            pCudaBSP,
+            sizeof(CUDABSP::CUDABSP),
+            cudaMemcpyDeviceToHost
+        ));
+
+        volatile size_t* pLeavesCompleted;
+        CUDA_CHECK_ERROR(cudaHostAlloc(
+            &pLeavesCompleted,
+            sizeof(size_t),
+            cudaHostAllocMapped
+        ));
+
+        *pLeavesCompleted = 0;
+
+        volatile size_t* pDeviceLeavesCompleted;
+        CUDA_CHECK_ERROR(cudaHostGetDevicePointer(
+            const_cast<size_t**>(&pDeviceLeavesCompleted),
+            const_cast<size_t*>(pLeavesCompleted),
+            0
+        ));
 
         const size_t BLOCK_WIDTH = 128;
         size_t numBlocks = div_ceil(cudaBSP.numLeaves, BLOCK_WIDTH);
@@ -741,13 +753,56 @@ namespace LeafAmbient {
             << cudaBSP.numLeaves << " leaf ambient threads..."
             << std::endl;
 
+        cudaEvent_t startEvent;
+        cudaEvent_t stopEvent;
+
+        CUDA_CHECK_ERROR(cudaEventCreate(&startEvent));
+        CUDA_CHECK_ERROR(cudaEventCreate(&stopEvent));
+
+        CUDA_CHECK_ERROR(cudaEventRecord(startEvent));
+
         KERNEL_LAUNCH(
-            compute_leaf_ambient,
-            numBlocks, BLOCK_WIDTH,
-            pCudaBSP
+            LeafAmbient::compute_leaf_ambient,
+            numBlocks,
+            BLOCK_WIDTH,
+            pCudaBSP,
+            const_cast<size_t*>(pDeviceLeavesCompleted)
         );
 
+        flush_wddm_queue();
+
+        size_t lastLeavesCompleted = 0;
+        size_t leavesCompleted = 0;
+
+        do {
+            CUDA_CHECK_ERROR(cudaPeekAtLastError());
+
+            leavesCompleted = *pLeavesCompleted;
+
+            if (leavesCompleted > lastLeavesCompleted) {
+                std::cout << "    " << leavesCompleted << "/"
+                    << cudaBSP.numLeaves
+                    << " leaves processed..." << std::endl;
+            }
+
+            lastLeavesCompleted = leavesCompleted;
+
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+
+        } while (leavesCompleted < cudaBSP.numLeaves);
+
+        CUDA_CHECK_ERROR(cudaEventRecord(stopEvent));
         CUDA_CHECK_ERROR(cudaDeviceSynchronize());
+
+        float time;
+        CUDA_CHECK_ERROR(cudaEventElapsedTime(&time, startEvent, stopEvent));
+
+        std::cout << "Done! (" << time << " ms)" << std::endl;
+
+        CUDA_CHECK_ERROR(cudaEventDestroy(startEvent));
+        CUDA_CHECK_ERROR(cudaEventDestroy(stopEvent));
+
+        CUDA_CHECK_ERROR(cudaFreeHost(const_cast<size_t*>(pLeavesCompleted)));
     }
 }
 
@@ -857,7 +912,7 @@ namespace DirectLighting {
             /* I CAN SEE THE LIGHT */
             float attenuation = attenuate(light, dist);
 
-            float3 lightContribution = make_float3(light.intensity);
+            float3 lightContribution = make_float3(light.intensity) / 255.f;
             lightContribution *= penumbraScale * 255.0f / attenuation;
 
             result += lightContribution;
@@ -901,16 +956,18 @@ namespace DirectLighting {
         __shared__ CUDARAD::FaceInfo faceInfo;
 
         if (primaryThread) {
-            // Map block numbers to faces.
             faceInfo = CUDARAD::FaceInfo(*pCudaBSP, blockIdx.x);
-
-            //printf(
-            //    "Processing Face %u...\n",
-            //    static_cast<unsigned int>(faceInfo.faceIndex)
-            //);
         }
 
         __syncthreads();
+
+        if (faceInfo.face.lightOffset < 0) {
+            if (primaryThread) {
+                printf("skip cuz lightOffset < 0\n");
+                atomicAdd(pFacesCompleted, 1);
+            }
+            return;
+        }
 
         /* Take a sample at each lightmap luxel. */
         for (size_t i=0; i<faceInfo.lightmapHeight; i+=blockDim.y) {
@@ -950,8 +1007,10 @@ namespace DirectLighting {
             faceInfo.avgLight = faceInfo.totalLight;
             faceInfo.avgLight /= static_cast<float>(faceInfo.lightmapSize);
 
-            pCudaBSP->lightSamples[faceInfo.lightmapStartIndex - 1]
-                = faceInfo.avgLight;
+            if (faceInfo.lightmapStartIndex > 0) {
+                pCudaBSP->lightSamples[faceInfo.lightmapStartIndex - 1] =
+                    faceInfo.avgLight;
+            }
 
             // Still have no idea how this works. But if we don't do this,
             // EVERYTHING becomes a disaster...
