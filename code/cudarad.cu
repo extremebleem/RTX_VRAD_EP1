@@ -314,7 +314,7 @@ namespace LeafAmbient {
             const BSP::DWorldLight& light = cudaBSP.worldLights[i];
 
             if (light.type == BSP::EMIT_SKYAMBIENT && light.style == 0) {
-                return make_float3(light.intensity) / 255.0f;
+                return make_float3(light.intensity);
             }
         }
 
@@ -540,7 +540,7 @@ namespace LeafAmbient {
         float intensity = fmaxf(
             light.intensity.x,
             fmaxf(light.intensity.y, light.intensity.z)
-        ) / 255.f;
+        );
 
         return intensity * inv_r_squared(make_float3(0.0f, 0.0f, 512.0f))
             < WORLD_LIGHT_MIN_EMIT_SURFACE;
@@ -624,7 +624,7 @@ namespace LeafAmbient {
                 continue;
             }
 
-            float3 intensity = make_float3(light.intensity) / 255.0f;
+            float3 intensity = make_float3(light.intensity);
 
             for (int side=0; side<NUM_CUBE_SIDES; ++side) {
                 float directionScale = dot(BOX_DIRECTIONS[side], deltaNormal);
@@ -676,7 +676,7 @@ namespace LeafAmbient {
             }
         }
 
-        //add_emit_surface_lights(cudaBSP, start, lightBoxColor);
+        add_emit_surface_lights(cudaBSP, start, lightBoxColor);
     }
 
     __global__ void compute_leaf_ambient(
@@ -714,6 +714,7 @@ namespace LeafAmbient {
             );
 
             for (int side = 0; side < NUM_CUBE_SIDES; ++side) {
+
                 out.color[side] = CUDABSP::rgbexp32_from_float3(cube[side]);
             }
         }
@@ -868,7 +869,7 @@ namespace DirectLighting {
                 float3 end = start + wi * COORD_EXTENT;
 
                 if (!CUDARAD::g_pDeviceRayTracer->LOS_blocked_sun(start, end)) {
-                    result += make_float3(light.intensity) * ndotl;
+                    result += make_float3(light.intensity) * ndotl * 255.f;
                 }
 
                 continue;

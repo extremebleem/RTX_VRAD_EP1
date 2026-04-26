@@ -1573,9 +1573,9 @@ namespace BSP {
             get_coords(),
 
             Vec3<float> {
-                static_cast<float>(r),
-                static_cast<float>(g),
-                static_cast<float>(b),
+                static_cast<float>(r) / 255.f,
+                static_cast<float>(g) / 255.f,
+                static_cast<float>(b) / 255.f,
             },
 
             Vec3<float> {
