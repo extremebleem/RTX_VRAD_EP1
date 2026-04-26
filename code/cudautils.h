@@ -5,10 +5,6 @@
 #include <cstdlib>
 #include <cstdio>
 
-#ifdef __CUDACC__
-#include "cub/cub.cuh"
-#endif
-
 #include "cuda_runtime.h"
 #include "device_launch_parameters.h"
 
@@ -48,52 +44,16 @@ inline __device__ void prefix_sum(T (&in)[COUNT], T (&out)[COUNT]) {
         "prefix_sum() element count must be divisible by thread count!"
     );
 
-#ifdef __CUDACC__
-    const size_t ITEMS_PER_THREAD = COUNT / (BLOCK_WIDTH * BLOCK_HEIGHT);
+    if (threadIdx.x == 0 && threadIdx.y == 0) {
+        T running = 0;
 
-    using Loader = cub::BlockLoad<
-        T,
-        BLOCK_WIDTH,
-        ITEMS_PER_THREAD,
-        cub::BLOCK_LOAD_DIRECT,
-        BLOCK_HEIGHT
-    >;
-
-    using Scanner = cub::BlockScan<
-        T,
-        BLOCK_WIDTH,
-        cub::BLOCK_SCAN_RAKING,
-        BLOCK_HEIGHT
-    >;
-
-    using Storer = cub::BlockStore<
-        T,
-        BLOCK_WIDTH,
-        ITEMS_PER_THREAD,
-        cub::BLOCK_STORE_DIRECT,
-        BLOCK_HEIGHT
-    >;
-
-    __shared__ union {
-        typename Loader::TempStorage load;
-        typename Scanner::TempStorage scan;
-        typename Storer::TempStorage store;
-    } tempStorage;
-
-    T data[ITEMS_PER_THREAD];
-
-    Loader(tempStorage.load).Load(in, data);
+        for (size_t i=0; i<COUNT; ++i) {
+            out[i] = running;
+            running += in[i];
+        }
+    }
 
     __syncthreads();
-
-    Scanner(tempStorage.scan).ExclusiveSum(data, data);
-
-    __syncthreads();
-
-    Storer(tempStorage.store).Store(out, data);
-
-    __syncthreads();
-#endif
 }
 
 template<

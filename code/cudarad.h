@@ -46,6 +46,8 @@ namespace CUDARAD {
     void bounce_lighting(BSP::BSP& bsp, CUDABSP::CUDABSP* pCudaBSP);
     
     void compute_ambient_lighting(CUDABSP::CUDABSP* pCudaBSP);
+
+    void compute_leaf_ambient(CUDABSP::CUDABSP* pCudaBSP);
 }
 
 #endif

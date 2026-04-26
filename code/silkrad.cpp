@@ -52,6 +52,9 @@ int main(int argc, char** argv) {
     std::cout << "SilkRAD -- GPU-Accelerated Radiosity Simulator" << std::endl;
 
     const std::string filename(argv[1]);
+    const std::string outputFilename =
+        argc >= 3 ? std::string(argv[2])
+                  : std::string("D:\\games\\CSS_LOVE\\cstrike\\maps\\out.bsp");
     std::ifstream f(filename, std::ios::binary);
 
     std::unique_ptr<BSP::BSP> pBSP;
@@ -123,15 +126,15 @@ int main(int argc, char** argv) {
     //CUDARAD::bounce_lighting(*pBSP, pCudaBSP);
 
     std::cout << "Compute ambient lighting..." << std::endl;
-    //CUDARAD::compute_ambient_lighting(pCudaBSP);
+    CUDARAD::compute_leaf_ambient(pCudaBSP);
 
     std::cout << "Convert light samples to RGBExp32..." << std::endl;
     //CUDABSP::convert_lightsamples(pCudaBSP);
 
     std::cout << "Update host BSP data..." << std::endl;
-    //CUDABSP::update_bsp(*pBSP, pCudaBSP);
+    CUDABSP::update_bsp(*pBSP, pCudaBSP);
 
-    //CUDABSP::destroy_cudabsp(pCudaBSP);
+    CUDABSP::destroy_cudabsp(pCudaBSP);
 
     /*
      * Mark the BSP as non-fullbright.
@@ -141,9 +144,9 @@ int main(int argc, char** argv) {
      */
     pBSP->set_fullbright(false);
 
-    pBSP->write("D:\\games\\CSS_LOVE\\cstrike\\maps\\out.bsp");
+    pBSP->write(outputFilename);
 
-    std::cout << "Wrote to file \"out.bsp\"." << std::endl;
+    std::cout << "Wrote to file \"" << outputFilename << "\"." << std::endl;
 
     /* Tear down the radiosity subsystem. */
     CUDARAD::cleanup();

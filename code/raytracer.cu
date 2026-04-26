@@ -398,6 +398,7 @@ namespace RayTracer {
         best.triangleId = 0;
         best.faceId = 0;
         best.t = 3.402823466e+38F;
+        best.position = make_float3();
 
         float3 dir = normalized(endPos - startPos);
         float3 invDir = { 1.0f / dir.x, 1.0f / dir.y, 1.0f / dir.z };
@@ -443,6 +444,7 @@ namespace RayTracer {
                         best.triangleId = triId;
                         best.faceId = tri.faceId;
                         best.t = t;
+                        best.position = startPos + dir * t;
                     }
                 }
 

@@ -3,6 +3,7 @@
 #include <cstdio>
 #include <cstdint>
 #include <cassert>
+#include <cmath>
 
 #include "cuda_runtime.h"
 
@@ -81,51 +82,36 @@
 
 namespace CUDABSP {
     __device__ BSP::RGBExp32 rgbexp32_from_float3(float3 color) {
-        const float EPSILON = 1e-3f;
+        color.x = fmaxf(color.x, 0.0f);
+        color.y = fmaxf(color.y, 0.0f);
+        color.z = fmaxf(color.z, 0.0f);
 
-        if ((EPSILON <= color.x && color.x < 1.0f)
-                && (EPSILON <= color.y && color.y < 1.0f)
-                && (EPSILON <= color.z && color.z < 1.0f)) {
-
-            int8_t exp = 0;
-
-            while ((EPSILON <= color.x && color.x < 1.0f)
-                   || (EPSILON <= color.y && color.y < 1.0f)
-                   || (EPSILON <= color.z && color.z < 1.0f)) {
-
-                color *= 2.0f;
-                exp--;
-            }
-
-            return BSP::RGBExp32 {
-                static_cast<uint8_t>(color.x),
-                static_cast<uint8_t>(color.y),
-                static_cast<uint8_t>(color.z),
-                exp,
-            };
+        float maxColor = fmaxf(color.x, fmaxf(color.y, color.z));
+        if (maxColor <= 1e-20f) {
+            return BSP::RGBExp32 { 0, 0, 0, 0 };
         }
-        else {
-            uint64_t r = static_cast<uint64_t>(color.x);
-            uint64_t g = static_cast<uint64_t>(color.y);
-            uint64_t b = static_cast<uint64_t>(color.z);
 
-            int8_t exp = 0;
+        int exponent;
+        frexpf(maxColor, &exponent);
 
-            while (r > 255 || g > 255 || b > 255) {
-                r >>= 1;
-                g >>= 1;
-                b >>= 1;
+        float scale = 255.0f / ldexpf(1.0f, exponent);
 
-                exp++;
-            }
+        return BSP::RGBExp32 {
+            static_cast<uint8_t>(min(255, max(0, int(color.x * scale + 0.5f)))),
+            static_cast<uint8_t>(min(255, max(0, int(color.y * scale + 0.5f)))),
+            static_cast<uint8_t>(min(255, max(0, int(color.z * scale + 0.5f)))),
+            static_cast<int8_t>(exponent)
+        };
+    }
 
-            return BSP::RGBExp32 {
-                static_cast<uint8_t>(r),
-                static_cast<uint8_t>(g),
-                static_cast<uint8_t>(b),
-                exp
-            };
-        }
+    static float3 float3_from_rgbexp32(const BSP::RGBExp32& sample) {
+        float scale = std::ldexp(1.0f, sample.exp);
+
+        return make_float3(
+            static_cast<float>(sample.r) * scale,
+            static_cast<float>(sample.g) * scale,
+            static_cast<float>(sample.b) * scale
+        );
     }
 
     __device__ int16_t cluster_for_pos(
@@ -186,11 +172,14 @@ namespace CUDABSP {
         rgbExp32LightSamples[index] = rgbexp32_from_float3(sample);
     }
 
-    CUDABSP* make_cudabsp(const BSP::BSP& bsp) {
+    CUDABSP* make_cudabsp(BSP::BSP& bsp) {
         CUDABSP cudaBSP;
 
         // To detect corruption.
         cudaBSP.tag = TAG;
+
+        bsp.get_ambient_samples().clear();
+        bsp.get_ambient_samples().resize(bsp.get_leaves().size());
 
         /* Compute the sizes of all the necessary arrays. */
         cudaBSP.numModels = bsp.get_models().size();
@@ -324,7 +313,22 @@ namespace CUDABSP {
                 lightSamplesSize
             )
         );
-        // Don't need to copy light samples since we're computing them.
+        std::vector<float3> lightSamples;
+        lightSamples.reserve(bsp.get_lightsamples().size());
+
+        for (const BSP::RGBExp32& sample : bsp.get_lightsamples()) {
+            lightSamples.push_back(float3_from_rgbexp32(sample));
+        }
+
+        if (lightSamplesSize > 0) {
+            CUDA_CHECK_ERROR(
+                cudaMemcpy(
+                    cudaBSP.lightSamples, lightSamples.data(),
+                    lightSamplesSize,
+                    cudaMemcpyHostToDevice
+                )
+            );
+        }
 
         CUDA_CHECK_ERROR(
             cudaMalloc(
@@ -332,7 +336,16 @@ namespace CUDABSP {
                 rgbExp32LightSamplesSize
             )
         );
-        // Don't need to copy light samples since we're computing them.
+        if (rgbExp32LightSamplesSize > 0) {
+            CUDA_CHECK_ERROR(
+                cudaMemcpy(
+                    cudaBSP.rgbExp32LightSamples,
+                    bsp.get_lightsamples().data(),
+                    rgbExp32LightSamplesSize,
+                    cudaMemcpyHostToDevice
+                )
+            );
+        }
 
         CUDA_CHECK_ERROR(cudaMalloc(&cudaBSP.texInfos, texInfosSize));
         CUDA_CHECK_ERROR(

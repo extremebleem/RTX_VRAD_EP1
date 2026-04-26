@@ -1,5 +1,3 @@
-#include "cub/cub.cuh"
-
 #include "cuda_runtime.h"
 #include "device_launch_parameters.h"
 #include "device_atomic_functions.h"
@@ -20,6 +18,14 @@
 
 #include "cudautils.h"
 
+
+#ifndef MAX_LIGHTSTYLES
+#define MAX_LIGHTSTYLES 4
+#endif
+
+#ifndef NUM_BUMP_VECTS
+#define NUM_BUMP_VECTS 3
+#endif
 
 namespace CUDARAD {
     static std::unique_ptr<RayTracer::CUDARayTracer> g_pRayTracer;
@@ -64,6 +70,686 @@ namespace CUDARAD {
     }
 }
 
+namespace LeafAmbient {
+
+    static __device__ inline float3 sr_zero3() {
+        return make_float3(0.0f, 0.0f, 0.0f);
+    }
+
+    static __device__ inline float3 sr_add(float3 a, float3 b) {
+        return make_float3(a.x + b.x, a.y + b.y, a.z + b.z);
+    }
+
+    static __device__ inline float3 sr_mul(float3 a, float s) {
+        return make_float3(a.x * s, a.y * s, a.z * s);
+    }
+
+    static __device__ inline float3 sr_mul(float3 a, float3 b) {
+        return make_float3(a.x * b.x, a.y * b.y, a.z * b.z);
+    }
+
+    static __device__ inline int sr_clampi(int v, int lo, int hi) {
+        return max(lo, min(v, hi));
+    }
+
+    static __device__ inline float tex_light_to_linear(uint8_t c, int8_t exponent) {
+        return float(c) * exp2f(float(exponent));
+    }
+
+    static __device__ inline float3 decode_rgbexp32(BSP::RGBExp32 c) {
+        return make_float3(
+            tex_light_to_linear(c.r, c.exp),
+            tex_light_to_linear(c.g, c.exp),
+            tex_light_to_linear(c.b, c.exp)
+        );
+    }
+
+    enum { NUM_VERTEX_NORMALS = 162 };
+    enum { NUM_CUBE_SIDES = 6 };
+
+    static __device__ const int DWL_FLAGS_INAMBIENTCUBE = 0x0001;
+    static __device__ const float ON_EPSILON = 0.1f;
+    static __device__ const float COORD_EXTENT = 16384.0f;
+    static __device__ const float WORLD_LIGHT_MIN_EMIT_SURFACE = 0.005f;
+
+    static __device__ const float3 BOX_DIRECTIONS[NUM_CUBE_SIDES] = {
+        {  1.0f,  0.0f,  0.0f },
+        { -1.0f,  0.0f,  0.0f },
+        {  0.0f,  1.0f,  0.0f },
+        {  0.0f, -1.0f,  0.0f },
+        {  0.0f,  0.0f,  1.0f },
+        {  0.0f,  0.0f, -1.0f },
+    };
+
+    static __device__ const float3 ANORMS[NUM_VERTEX_NORMALS] = {
+        { -0.525731f,  0.000000f,  0.850651f },
+        { -0.442863f,  0.238856f,  0.864188f },
+        { -0.295242f,  0.000000f,  0.955423f },
+        { -0.309017f,  0.500000f,  0.809017f },
+        { -0.162460f,  0.262866f,  0.951056f },
+        {  0.000000f,  0.000000f,  1.000000f },
+        {  0.000000f,  0.850651f,  0.525731f },
+        { -0.147621f,  0.716567f,  0.681718f },
+        {  0.147621f,  0.716567f,  0.681718f },
+        {  0.000000f,  0.525731f,  0.850651f },
+        {  0.309017f,  0.500000f,  0.809017f },
+        {  0.525731f,  0.000000f,  0.850651f },
+        {  0.295242f,  0.000000f,  0.955423f },
+        {  0.442863f,  0.238856f,  0.864188f },
+        {  0.162460f,  0.262866f,  0.951056f },
+        { -0.681718f,  0.147621f,  0.716567f },
+        { -0.809017f,  0.309017f,  0.500000f },
+        { -0.587785f,  0.425325f,  0.688191f },
+        { -0.850651f,  0.525731f,  0.000000f },
+        { -0.864188f,  0.442863f,  0.238856f },
+        { -0.716567f,  0.681718f,  0.147621f },
+        { -0.688191f,  0.587785f,  0.425325f },
+        { -0.500000f,  0.809017f,  0.309017f },
+        { -0.238856f,  0.864188f,  0.442863f },
+        { -0.425325f,  0.688191f,  0.587785f },
+        { -0.716567f,  0.681718f, -0.147621f },
+        { -0.500000f,  0.809017f, -0.309017f },
+        { -0.525731f,  0.850651f,  0.000000f },
+        {  0.000000f,  0.850651f, -0.525731f },
+        { -0.238856f,  0.864188f, -0.442863f },
+        {  0.000000f,  0.955423f, -0.295242f },
+        { -0.262866f,  0.951056f, -0.162460f },
+        {  0.000000f,  1.000000f,  0.000000f },
+        {  0.000000f,  0.955423f,  0.295242f },
+        { -0.262866f,  0.951056f,  0.162460f },
+        {  0.238856f,  0.864188f,  0.442863f },
+        {  0.262866f,  0.951056f,  0.162460f },
+        {  0.500000f,  0.809017f,  0.309017f },
+        {  0.238856f,  0.864188f, -0.442863f },
+        {  0.262866f,  0.951056f, -0.162460f },
+        {  0.500000f,  0.809017f, -0.309017f },
+        {  0.850651f,  0.525731f,  0.000000f },
+        {  0.716567f,  0.681718f,  0.147621f },
+        {  0.716567f,  0.681718f, -0.147621f },
+        {  0.525731f,  0.850651f,  0.000000f },
+        {  0.425325f,  0.688191f,  0.587785f },
+        {  0.864188f,  0.442863f,  0.238856f },
+        {  0.688191f,  0.587785f,  0.425325f },
+        {  0.809017f,  0.309017f,  0.500000f },
+        {  0.681718f,  0.147621f,  0.716567f },
+        {  0.587785f,  0.425325f,  0.688191f },
+        {  0.955423f,  0.295242f,  0.000000f },
+        {  1.000000f,  0.000000f,  0.000000f },
+        {  0.951056f,  0.162460f,  0.262866f },
+        {  0.850651f, -0.525731f,  0.000000f },
+        {  0.955423f, -0.295242f,  0.000000f },
+        {  0.864188f, -0.442863f,  0.238856f },
+        {  0.951056f, -0.162460f,  0.262866f },
+        {  0.809017f, -0.309017f,  0.500000f },
+        {  0.681718f, -0.147621f,  0.716567f },
+        {  0.850651f,  0.000000f,  0.525731f },
+        {  0.864188f,  0.442863f, -0.238856f },
+        {  0.809017f,  0.309017f, -0.500000f },
+        {  0.951056f,  0.162460f, -0.262866f },
+        {  0.525731f,  0.000000f, -0.850651f },
+        {  0.681718f,  0.147621f, -0.716567f },
+        {  0.681718f, -0.147621f, -0.716567f },
+        {  0.850651f,  0.000000f, -0.525731f },
+        {  0.809017f, -0.309017f, -0.500000f },
+        {  0.864188f, -0.442863f, -0.238856f },
+        {  0.951056f, -0.162460f, -0.262866f },
+        {  0.147621f,  0.716567f, -0.681718f },
+        {  0.309017f,  0.500000f, -0.809017f },
+        {  0.425325f,  0.688191f, -0.587785f },
+        {  0.442863f,  0.238856f, -0.864188f },
+        {  0.587785f,  0.425325f, -0.688191f },
+        {  0.688191f,  0.587785f, -0.425325f },
+        { -0.147621f,  0.716567f, -0.681718f },
+        { -0.309017f,  0.500000f, -0.809017f },
+        {  0.000000f,  0.525731f, -0.850651f },
+        { -0.525731f,  0.000000f, -0.850651f },
+        { -0.442863f,  0.238856f, -0.864188f },
+        { -0.295242f,  0.000000f, -0.955423f },
+        { -0.162460f,  0.262866f, -0.951056f },
+        {  0.000000f,  0.000000f, -1.000000f },
+        {  0.295242f,  0.000000f, -0.955423f },
+        {  0.162460f,  0.262866f, -0.951056f },
+        { -0.442863f, -0.238856f, -0.864188f },
+        { -0.309017f, -0.500000f, -0.809017f },
+        { -0.162460f, -0.262866f, -0.951056f },
+        {  0.000000f, -0.850651f, -0.525731f },
+        { -0.147621f, -0.716567f, -0.681718f },
+        {  0.147621f, -0.716567f, -0.681718f },
+        {  0.000000f, -0.525731f, -0.850651f },
+        {  0.309017f, -0.500000f, -0.809017f },
+        {  0.442863f, -0.238856f, -0.864188f },
+        {  0.162460f, -0.262866f, -0.951056f },
+        {  0.238856f, -0.864188f, -0.442863f },
+        {  0.500000f, -0.809017f, -0.309017f },
+        {  0.425325f, -0.688191f, -0.587785f },
+        {  0.716567f, -0.681718f, -0.147621f },
+        {  0.688191f, -0.587785f, -0.425325f },
+        {  0.587785f, -0.425325f, -0.688191f },
+        {  0.000000f, -0.955423f, -0.295242f },
+        {  0.000000f, -1.000000f,  0.000000f },
+        {  0.262866f, -0.951056f, -0.162460f },
+        {  0.000000f, -0.850651f,  0.525731f },
+        {  0.000000f, -0.955423f,  0.295242f },
+        {  0.238856f, -0.864188f,  0.442863f },
+        {  0.262866f, -0.951056f,  0.162460f },
+        {  0.500000f, -0.809017f,  0.309017f },
+        {  0.716567f, -0.681718f,  0.147621f },
+        {  0.525731f, -0.850651f,  0.000000f },
+        { -0.238856f, -0.864188f, -0.442863f },
+        { -0.500000f, -0.809017f, -0.309017f },
+        { -0.262866f, -0.951056f, -0.162460f },
+        { -0.850651f, -0.525731f,  0.000000f },
+        { -0.716567f, -0.681718f, -0.147621f },
+        { -0.716567f, -0.681718f,  0.147621f },
+        { -0.525731f, -0.850651f,  0.000000f },
+        { -0.500000f, -0.809017f,  0.309017f },
+        { -0.238856f, -0.864188f,  0.442863f },
+        { -0.262866f, -0.951056f,  0.162460f },
+        { -0.864188f, -0.442863f,  0.238856f },
+        { -0.809017f, -0.309017f,  0.500000f },
+        { -0.688191f, -0.587785f,  0.425325f },
+        { -0.681718f, -0.147621f,  0.716567f },
+        { -0.442863f, -0.238856f,  0.864188f },
+        { -0.587785f, -0.425325f,  0.688191f },
+        { -0.309017f, -0.500000f,  0.809017f },
+        { -0.147621f, -0.716567f,  0.681718f },
+        { -0.425325f, -0.688191f,  0.587785f },
+        { -0.162460f, -0.262866f,  0.951056f },
+        {  0.442863f, -0.238856f,  0.864188f },
+        {  0.162460f, -0.262866f,  0.951056f },
+        {  0.309017f, -0.500000f,  0.809017f },
+        {  0.147621f, -0.716567f,  0.681718f },
+        {  0.000000f, -0.525731f,  0.850651f },
+        {  0.425325f, -0.688191f,  0.587785f },
+        {  0.587785f, -0.425325f,  0.688191f },
+        {  0.688191f, -0.587785f,  0.425325f },
+        { -0.955423f,  0.295242f,  0.000000f },
+        { -0.951056f,  0.162460f,  0.262866f },
+        { -1.000000f,  0.000000f,  0.000000f },
+        { -0.850651f,  0.000000f,  0.525731f },
+        { -0.955423f, -0.295242f,  0.000000f },
+        { -0.951056f, -0.162460f,  0.262866f },
+        { -0.864188f,  0.442863f, -0.238856f },
+        { -0.951056f,  0.162460f, -0.262866f },
+        { -0.809017f,  0.309017f, -0.500000f },
+        { -0.864188f, -0.442863f, -0.238856f },
+        { -0.951056f, -0.162460f, -0.262866f },
+        { -0.809017f, -0.309017f, -0.500000f },
+        { -0.681718f,  0.147621f, -0.716567f },
+        { -0.681718f, -0.147621f, -0.716567f },
+        { -0.850651f,  0.000000f, -0.525731f },
+        { -0.688191f,  0.587785f, -0.425325f },
+        { -0.587785f,  0.425325f, -0.688191f },
+        { -0.425325f,  0.688191f, -0.587785f },
+        { -0.425325f, -0.688191f, -0.587785f },
+        { -0.587785f, -0.425325f, -0.688191f },
+        { -0.688191f, -0.587785f, -0.425325f },
+    };
+
+    static __device__ float length_squared(const float3& v) {
+        return dot(v, v);
+    }
+
+    static __device__ float3 component_multiply(
+            const float3& a,
+            const float3& b
+            ) {
+        return make_float3(a.x * b.x, a.y * b.y, a.z * b.z);
+    }
+
+    static __device__ float3 safe_normalized(const float3& v) {
+        float vLen = len(v);
+
+        if (vLen <= 1e-20f) {
+            return make_float3();
+        }
+
+        return v / vLen;
+    }
+
+    static __device__ float3 find_sky_ambient(
+            const CUDABSP::CUDABSP& cudaBSP
+            ) {
+        for (size_t i=0; i<cudaBSP.numWorldLights; ++i) {
+            const BSP::DWorldLight& light = cudaBSP.worldLights[i];
+
+            if (light.type == BSP::EMIT_SKYAMBIENT && light.style == 0) {
+                return make_float3(light.intensity);
+            }
+        }
+
+        return make_float3();
+    }
+
+    static __device__ float3 compute_lightmap_color_from_average(
+            const CUDABSP::CUDABSP& cudaBSP,
+            size_t faceIndex,
+            const float3& skyAmbient
+            ) {
+        if (faceIndex >= cudaBSP.numFaces) {
+            return make_float3();
+        }
+
+        const BSP::DFace& face = cudaBSP.faces[faceIndex];
+
+        if (face.texInfo < 0
+                || static_cast<size_t>(face.texInfo) >= cudaBSP.numTexInfos) {
+            return make_float3();
+        }
+
+        const BSP::TexInfo& texInfo = cudaBSP.texInfos[face.texInfo];
+
+        if (texInfo.flags & BSP::SURF_SKY) {
+            return skyAmbient;
+        }
+
+        if (face.lightOffset <= 0 || face.styles[0] == 255) {
+            return make_float3();
+        }
+
+        size_t lightmapStart =
+            static_cast<size_t>(face.lightOffset) / sizeof(BSP::RGBExp32);
+
+        if (lightmapStart == 0 || lightmapStart > cudaBSP.numLightSamples) {
+            return make_float3();
+        }
+
+        float3 color = cudaBSP.lightSamples[lightmapStart - 1];
+
+        if (texInfo.texData >= 0
+                && static_cast<size_t>(texInfo.texData)
+                    < cudaBSP.numTexDatas) {
+            const BSP::DTexData& texData = cudaBSP.texDatas[texInfo.texData];
+            color = component_multiply(color, make_float3(texData.reflectivity));
+        }
+
+        return color;
+    }
+
+    static __device__ float3 compute_ambient_from_surface(
+        const CUDABSP::CUDABSP& cudaBSP,
+        int faceId,
+        const float3& skyAmbient,
+        const float3& radcolor
+    ) {
+        const BSP::DFace& face = cudaBSP.faces[faceId];
+        const BSP::TexInfo& texInfo = cudaBSP.texInfos[face.texInfo];
+
+        if (texInfo.flags & BSP::SURF_SKY) {
+            return skyAmbient;
+        }
+
+        const BSP::DTexData& texData = cudaBSP.texDatas[texInfo.texData];
+
+        return sr_mul(radcolor, make_float3(
+            texData.reflectivity.x,
+            texData.reflectivity.y,
+            texData.reflectivity.z
+        ));
+    }
+
+    static __device__ float3 compute_lightmap_color_from_average_fallback(
+        const CUDABSP::CUDABSP& cudaBSP,
+        int faceId,
+        const float3& skyAmbient
+    ) {
+        const BSP::DFace& face = cudaBSP.faces[faceId];
+        const BSP::TexInfo& texInfo = cudaBSP.texInfos[face.texInfo];
+
+        if (texInfo.flags & BSP::SURF_SKY) {
+            return skyAmbient;
+        }
+
+        if (face.lightOffset < int(sizeof(BSP::RGBExp32))) {
+            return sr_zero3();
+        }
+
+        // Your SilkRAD path stores average lighting one RGBExp32 before lightOffset.
+        int base = face.lightOffset / int(sizeof(BSP::RGBExp32));
+
+        float3 color = cudaBSP.lightSamples[base - 1];
+        return compute_ambient_from_surface(cudaBSP, faceId, skyAmbient, color);
+    }
+
+    static __device__ bool world_to_face_luxel(
+        const CUDABSP::CUDABSP& cudaBSP,
+        int faceId,
+        const float3& p,
+        float2& outLuxel
+    ) {
+        const BSP::DFace& face = cudaBSP.faces[faceId];
+        const BSP::TexInfo& texInfo = cudaBSP.texInfos[face.texInfo];
+
+        if (texInfo.flags & BSP::SURF_NOLIGHT)
+            return false;
+
+        float s =
+            p.x * texInfo.lightmapVecs[0][0] +
+            p.y * texInfo.lightmapVecs[0][1] +
+            p.z * texInfo.lightmapVecs[0][2] +
+            texInfo.lightmapVecs[0][3];
+
+        float t =
+            p.x * texInfo.lightmapVecs[1][0] +
+            p.y * texInfo.lightmapVecs[1][1] +
+            p.z * texInfo.lightmapVecs[1][2] +
+            texInfo.lightmapVecs[1][3];
+
+        outLuxel.x = s - float(face.lightmapTextureMinsInLuxels[0]);
+        outLuxel.y = t - float(face.lightmapTextureMinsInLuxels[1]);
+
+        return true;
+    }
+
+    static __device__ bool surf_has_bumped_lightmaps(
+        const CUDABSP::CUDABSP& cudaBSP,
+        int faceId
+    ) {
+        const BSP::DFace& face = cudaBSP.faces[faceId];
+        const BSP::TexInfo& texInfo = cudaBSP.texInfos[face.texInfo];
+
+        return ((texInfo.flags & BSP::SURF_BUMPLIGHT) && !(texInfo.flags & BSP::SURF_NOLIGHT));
+    }
+
+    static __device__ float3 compute_lightmap_color_from_luxel(
+        const CUDABSP::CUDABSP& cudaBSP,
+        int faceId,
+        const float2& luxelCoord,
+        const float3& skyAmbient
+    ) {
+        const BSP::DFace& face = cudaBSP.faces[faceId];
+        const BSP::TexInfo& texInfo = cudaBSP.texInfos[face.texInfo];
+
+        if (texInfo.flags & BSP::SURF_SKY) {
+            return skyAmbient;
+        }
+
+        if (face.lightOffset < 0) {
+            return sr_zero3();
+        }
+
+        // SDK uses +1:
+        //   int smax = face.m_LightmapTextureSizeInLuxels[0] + 1;
+        //   int tmax = face.m_LightmapTextureSizeInLuxels[1] + 1;
+        int smax = face.lightmapTextureSizeInLuxels[0] + 1;
+        int tmax = face.lightmapTextureSizeInLuxels[1] + 1;
+
+        int ds = sr_clampi(int(floorf(luxelCoord.x)), 0, smax - 1);
+        int dt = sr_clampi(int(floorf(luxelCoord.y)), 0, tmax - 1);
+
+        int stylePlaneSize = smax * tmax;
+        if (surf_has_bumped_lightmaps(cudaBSP, faceId)) {
+            stylePlaneSize *= (NUM_BUMP_VECTS + 1);
+        }
+
+        // Source dface.lightofs/lightOffset is byte offset into LIGHTING lump.
+        // cudaBSP.lightSamples must be BSP::RGBExp32* for this indexing.
+        int base = face.lightOffset / int(sizeof(BSP::RGBExp32));
+        int luxelIndex = dt * smax + ds;
+
+        float3 colorSum = sr_zero3();
+
+        for (int map = 0; map < MAX_LIGHTSTYLES; ++map) {
+            if (face.styles[map] == 255)
+                break;
+
+            int sampleIndex = base + map * stylePlaneSize + luxelIndex;
+
+            float3 color = cudaBSP.lightSamples[sampleIndex];
+            color = compute_ambient_from_surface(cudaBSP, faceId, skyAmbient, color);
+            colorSum = sr_add(colorSum, color);
+        }
+
+        return colorSum;
+    }
+
+    static __device__ float3 calc_ray_ambient_lighting(
+            const CUDABSP::CUDABSP& cudaBSP,
+            const float3& start,
+            const float3& end,
+            const float3& skyAmbient
+            ) {
+        RayTracer::RayHit hit = CUDARAD::g_pDeviceRayTracer->trace_closest(start, end);
+
+        if (!hit.hit) {
+            return sr_zero3();
+        }
+
+        int faceId = int(hit.faceId);
+
+        float2 luxel;
+        if (!world_to_face_luxel(cudaBSP, faceId, hit.position, luxel)) {
+            return compute_lightmap_color_from_average_fallback(cudaBSP, faceId, skyAmbient);
+        }
+
+        return compute_lightmap_color_from_luxel(cudaBSP, faceId, luxel, skyAmbient);
+    }
+
+    static __device__ float inv_r_squared(const float3& delta) {
+        float distSquared = length_squared(delta);
+
+        if (distSquared <= 1e-20f) {
+            return 0.0f;
+        }
+
+        return 1.0f / distSquared;
+    }
+
+    static __device__ bool is_leaf_ambient_surface_light(
+            const BSP::DWorldLight& light
+            ) {
+        if (light.type != BSP::EMIT_SURFACE || light.style != 0) {
+            return false;
+        }
+
+        float intensity = fmaxf(
+            light.intensity.x,
+            fmaxf(light.intensity.y, light.intensity.z)
+        );
+
+        return intensity * inv_r_squared(make_float3(0.0f, 0.0f, 512.0f))
+            < WORLD_LIGHT_MIN_EMIT_SURFACE;
+    }
+
+    static __device__ float engine_world_light_distance_falloff(
+            const BSP::DWorldLight& light,
+            const float3& delta
+            ) {
+        if (light.radius != 0.0f
+                && length_squared(delta) > light.radius * light.radius) {
+            return 0.0f;
+        }
+
+        return inv_r_squared(delta);
+    }
+
+    static __device__ float engine_world_light_angle(
+            const float3& lightNormal,
+            const float3& sampleNormal,
+            const float3& deltaNormal
+            ) {
+        float dotSample = dot(sampleNormal, deltaNormal);
+
+        if (dotSample < 0.0f) {
+            return 0.0f;
+        }
+
+        float dotLight = -dot(deltaNormal, lightNormal);
+
+        if (dotLight <= ON_EPSILON / 10.0f) {
+            return 0.0f;
+        }
+
+        return dotSample * dotLight;
+    }
+
+    static __device__ void add_emit_surface_lights(
+            const CUDABSP::CUDABSP& cudaBSP,
+            const float3& start,
+            float3 lightBoxColor[NUM_CUBE_SIDES]
+            ) {
+        for (size_t i=0; i<cudaBSP.numWorldLights; ++i) {
+            const BSP::DWorldLight& light = cudaBSP.worldLights[i];
+
+            if (light.type != BSP::EMIT_SURFACE) {
+                continue;
+            }
+
+            if (!(light.flags & DWL_FLAGS_INAMBIENTCUBE)
+                    && !is_leaf_ambient_surface_light(light)) {
+                continue;
+            }
+
+            float3 lightOrigin = make_float3(light.origin);
+
+            if (CUDARAD::g_pDeviceRayTracer->LOS_blocked(start, lightOrigin)) {
+                continue;
+            }
+
+            float3 delta = lightOrigin - start;
+            float distanceScale =
+                engine_world_light_distance_falloff(light, delta);
+
+            if (distanceScale == 0.0f) {
+                continue;
+            }
+
+            float3 deltaNormal = safe_normalized(delta);
+            float angleScale = engine_world_light_angle(
+                safe_normalized(make_float3(light.normal)),
+                deltaNormal,
+                deltaNormal
+            );
+
+            float ratio = distanceScale * angleScale;
+
+            if (ratio == 0.0f) {
+                continue;
+            }
+
+            float3 intensity = make_float3(light.intensity);
+
+            for (int side=0; side<NUM_CUBE_SIDES; ++side) {
+                float directionScale = dot(BOX_DIRECTIONS[side], deltaNormal);
+
+                if (directionScale > 0.0f) {
+                    lightBoxColor[side] +=
+                        intensity * (directionScale * ratio);
+                }
+            }
+        }
+    }
+
+    static __device__ void compute_ambient_from_spherical_samples(
+            const CUDABSP::CUDABSP& cudaBSP,
+            const float3& start,
+            const float3& skyAmbient,
+            float3 lightBoxColor[NUM_CUBE_SIDES]
+            ) {
+        float weights[NUM_CUBE_SIDES];
+
+        for (int side=0; side<NUM_CUBE_SIDES; ++side) {
+            lightBoxColor[side] = make_float3();
+            weights[side] = 0.0f;
+        }
+
+        for (int i=0; i<NUM_VERTEX_NORMALS; ++i) {
+            float3 direction = ANORMS[i];
+            float3 end = start + direction * (COORD_EXTENT * 1.74f);
+
+            float3 radcolor = calc_ray_ambient_lighting(
+                cudaBSP, start, end, skyAmbient
+            );
+
+            for (int side=0; side<NUM_CUBE_SIDES; ++side) {
+                float directionScale = dot(direction, BOX_DIRECTIONS[side]);
+
+                if (directionScale > 0.0f) {
+                    weights[side] += directionScale;
+                    lightBoxColor[side] += radcolor * directionScale;
+                }
+            }
+        }
+
+        for (int side=0; side<NUM_CUBE_SIDES; ++side) {
+            if (weights[side] > 0.0f) {
+                lightBoxColor[side] /= weights[side];
+            }
+        }
+
+        add_emit_surface_lights(cudaBSP, start, lightBoxColor);
+    }
+
+    __global__ void compute_leaf_ambient(CUDABSP::CUDABSP* pCudaBSP) {
+        size_t leafIndex = blockIdx.x * blockDim.x + threadIdx.x;
+
+        if (leafIndex >= pCudaBSP->numLeaves
+                || leafIndex >= pCudaBSP->numAmbientLightSamples) {
+            return;
+        }
+
+        BSP::CompressedLightCube out;
+
+        for (int side=0; side<NUM_CUBE_SIDES; ++side) {
+            out.color[side] = BSP::RGBExp32 { 0, 0, 0, 0 };
+        }
+
+        const BSP::DLeaf& leaf = pCudaBSP->leaves[leafIndex];
+
+        if (leaf.contents & BSP::CONTENTS_SOLID) {
+            pCudaBSP->ambientLightSamples[leafIndex] = out;
+            return;
+        }
+
+        float3 center = make_float3(
+            (static_cast<float>(leaf.mins[0])
+                + static_cast<float>(leaf.maxs[0])) * 0.5f,
+            (static_cast<float>(leaf.mins[1])
+                + static_cast<float>(leaf.maxs[1])) * 0.5f,
+            (static_cast<float>(leaf.mins[2])
+                + static_cast<float>(leaf.maxs[2])) * 0.5f
+        );
+
+        float3 skyAmbient = find_sky_ambient(*pCudaBSP);
+        float3 cube[NUM_CUBE_SIDES];
+
+        compute_ambient_from_spherical_samples(
+            *pCudaBSP, center, skyAmbient, cube
+        );
+
+        for (int side=0; side<NUM_CUBE_SIDES; ++side) {
+            out.color[side] = CUDABSP::rgbexp32_from_float3(cube[side]);
+        }
+
+        pCudaBSP->ambientLightSamples[leafIndex] = out;
+    }
+
+    void run(CUDABSP::CUDABSP* pCudaBSP) {
+        CUDABSP::CUDABSP cudaBSP;
+
+        CUDA_CHECK_ERROR(
+            cudaMemcpy(
+                &cudaBSP, pCudaBSP, sizeof(CUDABSP::CUDABSP),
+                cudaMemcpyDeviceToHost
+            )
+        );
+
+        const size_t BLOCK_WIDTH = 128;
+        size_t numBlocks = div_ceil(cudaBSP.numLeaves, BLOCK_WIDTH);
+
+        std::cout << "Launching "
+            << cudaBSP.numLeaves << " leaf ambient threads..."
+            << std::endl;
+
+        KERNEL_LAUNCH(
+            compute_leaf_ambient,
+            numBlocks, BLOCK_WIDTH,
+            pCudaBSP
+        );
+
+        CUDA_CHECK_ERROR(cudaDeviceSynchronize());
+    }
+}
 
 namespace DirectLighting {
     static __device__ inline float attenuate(
@@ -781,7 +1467,7 @@ namespace CUDARAD {
                         make_float3(vertex2),
                         make_float3(vertex3),
                     },
-                    face.id
+                    static_cast<int>(face.id)
                 };
 
                 triangles.push_back(tri);
@@ -1034,5 +1720,10 @@ namespace CUDARAD {
                 );
 
         std::cout << "Done! (" << ms.count() << " ms)" << std::endl;
+    }
+
+    void compute_leaf_ambient(CUDABSP::CUDABSP* pCudaBSP)
+    {
+        LeafAmbient::run(pCudaBSP);
     }
 }

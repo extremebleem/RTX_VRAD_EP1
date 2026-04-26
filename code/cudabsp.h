@@ -67,7 +67,7 @@ namespace CUDABSP {
     };
 
     /** Creates a new CUDABSP on the device, and returns a pointer to it. */
-    CUDABSP* make_cudabsp(const BSP::BSP& bsp);
+    CUDABSP* make_cudabsp(BSP::BSP& bsp);
 
     /** Destroys the given CUDABSP located on the device. */
     void destroy_cudabsp(CUDABSP* pCudaBSP);

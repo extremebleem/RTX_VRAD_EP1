@@ -34,6 +34,7 @@ namespace RayTracer {
         size_t triangleId;
         size_t faceId;
         float t;
+        float3 position;
     };
 
     //class KDTree {

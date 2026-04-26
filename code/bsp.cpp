@@ -848,11 +848,6 @@ namespace BSP {
 
             if (leaf.contents & CONTENTS_SOLID)
                 continue;
-
-            // временный ambient, чтобы проверить что lump пишется и работает
-            for (int side = 0; side < 6; ++side) {
-                cube.color[side] = RGBExp32{ 16, 16, 16, 0 };
-            }
         }
     }
 
