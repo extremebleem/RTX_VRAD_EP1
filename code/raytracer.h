@@ -10,6 +10,7 @@ namespace RayTracer {
     struct Triangle {
         float3 vertices[3];
         int faceId;
+        int32_t flags;
     };
 
     enum class KDNodeType {NODE, LEAF};
@@ -84,6 +85,10 @@ namespace RayTracer {
             //__device__ Triangle& get_tri_indirect(size_t i);
 
             __device__ bool LOS_blocked(
+                const float3& start, const float3& end
+            );
+
+            __device__ bool LOS_blocked_sun(
                 const float3& start, const float3& end
             );
     };

@@ -676,7 +676,7 @@ namespace LeafAmbient {
             }
         }
 
-        add_emit_surface_lights(cudaBSP, start, lightBoxColor);
+        //add_emit_surface_lights(cudaBSP, start, lightBoxColor);
     }
 
     __global__ void compute_leaf_ambient(
@@ -687,6 +687,7 @@ namespace LeafAmbient {
 
         if (leafIndex >= pCudaBSP->numLeaves)
         {
+            printf("leafIndex %i numLeaves %i\n", leafIndex, pCudaBSP->numLeaves);
             return;
         }
 
@@ -854,29 +855,22 @@ namespace DirectLighting {
             //}
 
             if (light.type == BSP::EMIT_SKYLIGHT) {
-                float3 sunDir = safe_normalized(make_float3(light.normal));
+                float3 sunDir = safe_normalized(make_float3(light.normal)) * -1.f;
 
-                // Попробуй сначала так:
+                // выбери тот знак, который у тебя уже дал ndotl
                 float3 wi = sunDir;
 
-                if (len(sampleNormal) > 0.0f) {
-                    float ndotl = dot(sampleNormal, wi);
-                    if (ndotl <= 0.0f)
-                        continue;
-                }
-
-                const float EPSILON = 0.5f;
-                float3 start = samplePos + sampleNormal * EPSILON;
-                float3 end = start + wi * COORD_EXTENT;
-
-                if (CUDARAD::g_pDeviceRayTracer->LOS_blocked(start, end))
+                float ndotl = fmaxf(dot(sampleNormal, wi), 0.0f);
+                if (ndotl <= 0.0f)
                     continue;
 
-                float ndotl = len(sampleNormal) > 0.0f
-                    ? fmaxf(dot(sampleNormal, wi), 0.0f)
-                    : 1.0f;
+                float3 start = samplePos + sampleNormal * 2.0f;
+                float3 end = start + wi * COORD_EXTENT;
 
-                result += make_float3(light.intensity) * ndotl;
+                if (!CUDARAD::g_pDeviceRayTracer->LOS_blocked_sun(start, end)) {
+                    result += make_float3(light.intensity) * ndotl;
+                }
+
                 continue;
             }
 
@@ -955,7 +949,11 @@ namespace DirectLighting {
             /* I CAN SEE THE LIGHT */
             float attenuation = attenuate(light, dist);
 
-            float3 lightContribution = make_float3(light.intensity) / 255.f;
+            if (!isfinite(attenuation) || attenuation <= 1e-6f) {
+                continue;
+            }
+
+            float3 lightContribution = make_float3(light.intensity);
             lightContribution *= penumbraScale * 255.0f / attenuation;
 
             result += lightContribution;
@@ -1547,6 +1545,12 @@ namespace CUDARAD {
         for (const BSP::Face& face : bsp.get_faces()) {
             int32_t flags = face.get_texinfo().flags;
 
+            if (flags & BSP::SURF_NODRAW) continue;
+            if (flags & BSP::SURF_SKY) continue;
+            if (flags & BSP::SURF_TRANS) continue;
+            if (flags & BSP::SURF_TRIGGER) continue;
+            if (flags & BSP::SURF_NOLIGHT) continue;
+
             if ((flags & BSP::SURF_TRANS) && !(flags & BSP::SURF_NODRAW)) {
                 // Skip translucent faces, but keep nodraw faces.
                 continue;
@@ -1569,7 +1573,8 @@ namespace CUDARAD {
                         make_float3(vertex2),
                         make_float3(vertex3),
                     },
-                    static_cast<int>(face.id)
+                    static_cast<int>(face.id),
+                    face.get_texinfo().flags
                 };
 
                 triangles.push_back(tri);

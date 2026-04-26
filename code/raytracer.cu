@@ -733,4 +733,153 @@ namespace RayTracer {
 
         return false;
     }
+
+    __device__ bool CUDARayTracer::LOS_blocked_sun(
+            const float3& startPos, const float3& endPos
+            ) {
+
+        const float EPSILON = 1e-6f;
+
+        float3 dir = normalized(endPos - startPos);
+        float3 invDir = make_float3(
+            1.0f / (dir.x + ((dir.x < 0) ? -EPSILON : EPSILON)),
+            1.0f / (dir.y + ((dir.y < 0) ? -EPSILON : EPSILON)),
+            1.0f / (dir.z + ((dir.z < 0) ? -EPSILON : EPSILON))
+        );
+
+        struct StackEntry {
+            KDNode* pNode;
+            float3 start;
+            float3 end;
+        };
+
+        StackEntry stack[1024];   // empty ascending stack
+        size_t stackSize = 0;
+
+        stack[stackSize++] = {
+            m_pTreeRoot,
+            startPos,
+            endPos,
+        };
+
+        while (stackSize > 0) {
+            if (stackSize >= 1024) {
+                printf("ALERT: Raytracer stack size too big!!!\n");
+                return false;
+            }
+
+            StackEntry& entry = stack[--stackSize];
+
+            KDNode* pNode = entry.pNode;
+            float3 start = entry.start;
+            float3 end = entry.end;
+
+            float len = dist(start, end);
+
+            KDNode* children = pNode->children;
+
+            float t;
+
+            switch (pNode->type) {
+                case KDNodeType::LEAF:
+                    for (size_t ti=0; ti<pNode->numTris; ti++) {
+                        Triangle& tri = m_triangles[pNode->triangleIDs[ti]];
+
+                        if (tri.flags & BSP::SURF_SKY)
+                            continue;
+
+                        if (tri.flags & BSP::SURF_NODRAW)
+                            continue;
+
+                        if (tri.flags & BSP::SURF_TRANS)
+                            continue;
+
+                        // The M-T intersection algorithm uses CCW vertex
+                        // winding, but Source uses CW winding. So, we need to
+                        // pass the vertices in reverse order to get backface
+                        // culling to work correctly.
+                        bool isLOSBlocked = intersects(
+                            tri.vertices[2], tri.vertices[1], tri.vertices[0],
+                            startPos, endPos
+                        );
+
+                        if (isLOSBlocked) {
+                            return true;
+                        }
+                    }
+
+                    break;
+
+                case KDNodeType::NODE:
+                    bool dirPositive;
+
+                    switch (pNode->axis) {
+                        case Axis::X:
+                            t = (pNode->pos - start.x) * invDir.x;
+                            dirPositive = dir.x >= 0.0f;
+                            break;
+
+                        case Axis::Y:
+                            t = (pNode->pos - start.y) * invDir.y;
+                            dirPositive = dir.y >= 0.0f;
+                            break;
+
+                        case Axis::Z:
+                            t = (pNode->pos - start.z) * invDir.z;
+                            dirPositive = dir.z >= 0.0f;
+                            break;
+                    }
+
+                    if (t < 0.0) {
+                        // Plane is "behind" the line start.
+                        // Recurse on the right side if dir is positive.
+                        // Recurse on the left side if dir is negative.
+
+                        stack[stackSize++] = {
+                            &children[dirPositive ? 1 : 0],
+                            start,
+                            end,
+                        };
+                    }
+                    else if (t >= len) {
+                        // Plane is "ahead" of the line end.
+                        // Recurse on the left side if dir is positive.
+                        // Recurse on the right side if dir is negative.
+
+                        stack[stackSize++] = {
+                            &children[dirPositive ? 0 : 1],
+                            start,
+                            end
+                        };
+                    }
+                    else {
+                        // The line segment straddles the plane.
+                        // Clip the line and recurse on both sides.
+
+                        float3 clipPoint = start + t * dir;
+
+                        stack[stackSize++] = {
+                            &children[dirPositive ? 0 : 1],
+                            start,
+                            clipPoint,
+                        };
+
+                        if (stackSize >= 1024) {
+                            printf("ALERT: Stack size too big!!!\n");
+                            return false;
+                        }
+
+                        stack[stackSize++] = {
+                            &children[dirPositive ? 1 : 0],
+                            clipPoint,
+                            end,
+                        };
+                    }
+
+                    break;
+            }
+        }
+
+        return false;
+    }
 }
