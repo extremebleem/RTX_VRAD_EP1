@@ -192,6 +192,25 @@ namespace CUDABSP {
         rgbExp32LightSamples[index] = rgbexp32_from_float3(sample);
     }
 
+    __global__ void debug_faces_upload(CUDABSP* pCudaBSP) {
+        for (int i = 300; i < 320; ++i) {
+            printf("[UPLOAD] face %d lightOffset=%d styles=%u %u %u %u\n",
+                i,
+                pCudaBSP->faces[i].lightOffset,
+                pCudaBSP->faces[i].styles[0],
+                pCudaBSP->faces[i].styles[1],
+                pCudaBSP->faces[i].styles[2],
+                pCudaBSP->faces[i].styles[3]
+            );
+        }
+
+        printf("[UPLOAD] numFaces=%llu numLeaves=%llu numLightSamples=%llu\n",
+            (unsigned long long)pCudaBSP->numFaces,
+            (unsigned long long)pCudaBSP->numLeaves,
+            (unsigned long long)pCudaBSP->numLightSamples
+        );
+    }
+
     CUDABSP* make_cudabsp(BSP::BSP& bsp) {
         CUDABSP cudaBSP;
 

@@ -197,9 +197,26 @@ namespace BSP {
 
             const std::string& classname = entity.get("classname");
 
-            if (classname == "light"
-                    || classname == "light_spot") {
+            if (classname == "light" ||
+                classname == "light_spot" ||
+                classname == "light_environment") {
                 m_lights.push_back(Light(*this, entity));
+
+                if (classname == "light_environment") {
+                    Light ambient(*this, entity);
+                    ambient.emitType = EMIT_SKYAMBIENT;
+
+                    if (entity.has_key("_ambient")) {
+                        ambient.parse_color(entity.get("_ambient"));
+                    }
+                    else {
+                        ambient.r *= 0.5;
+                        ambient.g *= 0.5;
+                        ambient.b *= 0.5;
+                    }
+
+                    m_lights.push_back(ambient);
+                }
             }
         }
     }
@@ -1343,13 +1360,195 @@ namespace BSP {
     }
 
     Light::Light(const BSP& bsp, const Entity& entity) :
-            m_coords(vec3_from_str(entity.get("origin"))),
-            m_cluster(bsp.cluster_for_pos(m_coords)),
-            direction(Vec3<double> {1.0, 0.0, 0.0}) {
+        m_coords(vec3_from_str(entity.get("origin", "0 0 0"))),
+        m_cluster(bsp.cluster_for_pos(m_coords)),
+        direction(Vec3<double>{1.0, 0.0, 0.0}),
+        emitType(EMIT_POINT),
+        r(0.0), g(0.0), b(0.0),
+        c(0.0), l(0.0), q(0.0),
+        innerCone(30.0), outerCone(45.0)
+    {
+        const std::string classname = entity.get("classname");
 
-        /* Parse color */
-        std::stringstream stream(entity.get("_light"));
+        if (classname == "light") {
+            parse_point(bsp, entity);
+        }
+        else if (classname == "light_spot") {
+            parse_spot(bsp, entity);
+        }
+        else if (classname == "light_environment") {
+            parse_environment(bsp, entity);
+        }
+    }
 
+    bool Light::parse_light_value_raw_optional(const std::string& value) {
+        if (value.empty())
+            return false;
+
+        std::stringstream stream(value);
+        std::string s;
+
+        double rr, gg, bb;
+
+        if (!std::getline(stream, s, ' ')) return false;
+        rr = convert_str<double>(s);
+
+        if (!std::getline(stream, s, ' ')) return false;
+        gg = convert_str<double>(s);
+
+        if (!std::getline(stream, s, ' ')) return false;
+        bb = convert_str<double>(s);
+
+        if (rr == -1.0 && gg == -1.0 && bb == -1.0)
+            return false;
+
+        double brightness = 1.0;
+        if (std::getline(stream, s, ' '))
+            brightness = convert_str<double>(s) / 255.0;
+
+        r = rr * brightness;
+        g = gg * brightness;
+        b = bb * brightness;
+
+        return true;
+    }
+
+    void Light::parse_generic(const BSP& bsp, const Entity& entity) {
+        style = convert_str<int>(entity.get("style", "0"));
+
+        bool parsed = false;
+
+        if (bsp.is_hdr() && entity.has_key("_lightHDR")) {
+            parsed = parse_light_value_raw_optional(entity.get("_lightHDR"));
+
+            if (r == -1.0 && g == -1.0 && b == -1.0) {
+                parsed = false;
+            }
+        }
+
+        if (!parsed) {
+            parse_light_value_raw(entity.get("_light", "255 255 255 200"));
+        }
+
+        parse_direction(entity);
+    }
+
+    void Light::parse_falloff(const Entity& entity) {
+        c = convert_str<double>(entity.get("_constant_attn", "0"));
+        l = convert_str<double>(entity.get("_linear_attn", "0"));
+        q = convert_str<double>(entity.get("_quadratic_attn", "0"));
+
+        radius = convert_str<double>(entity.get("_distance", "0"));
+
+        constexpr double EPS = 1e-6;
+
+        if (c < EPS) c = 0.0;
+        if (l < EPS) l = 0.0;
+        if (q < EPS) q = 0.0;
+
+        if (c < EPS && l < EPS && q < EPS)
+            c = 1.0;
+
+        double ratio = c + 100.0 * l + 100.0 * 100.0 * q;
+
+        if (ratio > 0.0) {
+            r *= ratio;
+            g *= ratio;
+            b *= ratio;
+        }
+    }
+
+    void Light::parse_point(const BSP& bsp, const Entity& entity) {
+        emitType = EMIT_POINT;
+
+        parse_generic(bsp, entity);
+        parse_falloff(entity);
+    }
+
+    void Light::parse_spot(const BSP& bsp, const Entity& entity) {
+        parse_generic(bsp, entity);
+
+        emitType = EMIT_SPOTLIGHT;
+
+        innerCone = convert_str<double>(entity.get("_inner_cone", "0"));
+        if (innerCone == 0.0)
+            innerCone = 10.0;
+
+        outerCone = convert_str<double>(entity.get("_cone", "0"));
+        if (outerCone == 0.0)
+            outerCone = innerCone;
+
+        if (outerCone < innerCone)
+            outerCone = innerCone;
+
+        if (innerCone == 180.0 && outerCone == 180.0) {
+            innerCone = 0.0;
+            outerCone = 0.0;
+            emitType = EMIT_POINT;
+            exponent = 0.0;
+        }
+        else {
+            if (innerCone > 90.0)
+                innerCone = 90.0;
+
+            if (outerCone > 90.0)
+                outerCone = 90.0;
+
+            stopdot = std::cos(radians(innerCone));
+            stopdot2 = std::cos(radians(outerCone));
+
+            exponent = convert_str<double>(entity.get("_exponent", "0"));
+        }
+
+        parse_falloff(entity);
+    }
+
+    void Light::parse_environment(const BSP& bsp, const Entity& entity) {
+        parse_generic(bsp, entity);
+        
+        emitType = EMIT_SKYLIGHT;
+    }
+
+    void Light::parse_direction(const Entity& entity) {
+        Vec3<float> angles = vec3_from_str(entity.get("angles", "0 0 0"));
+
+        std::string pitchOverride = entity.get("pitch", "");
+        if (!pitchOverride.empty()) {
+            angles.x = convert_str<float>(pitchOverride);
+        }
+
+        direction = direction_from_angles(
+            Vec3<double>{angles.x, angles.y, angles.z}
+        );
+    }
+
+    void Light::parse_light_value_raw(const std::string& value) {
+        std::stringstream stream(value);
+        std::string s;
+
+        std::getline(stream, s, ' ');
+        r = convert_str<double>(s);
+
+        std::getline(stream, s, ' ');
+        g = convert_str<double>(s);
+
+        std::getline(stream, s, ' ');
+        b = convert_str<double>(s);
+
+        std::getline(stream, s, ' ');
+        double brightness = convert_str<double>(s);
+
+        r *= brightness / 255.0;
+        g *= brightness / 255.0;
+        b *= brightness / 255.0;
+    }
+
+    const Vec3<float>& Light::get_coords(void) const {
+        return m_coords;
+    }
+
+    void Light::parse_color(const std::string& value) {
+        std::stringstream stream(value);
         std::string s;
 
         std::getline(stream, s, ' ');
@@ -1364,101 +1563,43 @@ namespace BSP {
         std::getline(stream, s, ' ');
         double brightness = convert_str<double>(s) / 255.0;
 
-        // Note that this means we are scaling brightness linearly, rather
-        // than perceptually.
         r *= brightness;
         g *= brightness;
         b *= brightness;
-
-        /* Parse attenuation */
-        c = convert_str<double>(entity.get("_constant_attn", "0"));
-        l = convert_str<double>(entity.get("_linear_attn", "0"));
-        q = convert_str<double>(entity.get("_quadratic_attn", "0"));
-
-        /* Scale color intensity to 100-unit inverse attenuation */
-        // I don't know why we need to do this.
-        // Honestly, it doesn't really make all that much sense to me.
-        // But if we don't do it, everything looks way too dark.
-        double scale = attenuate(100.0);
-
-        r *= scale;
-        g *= scale;
-        b *= scale;
-
-        std::string classname = entity.get("classname");
-
-        if (classname == "light") {
-            emitType = EMIT_POINT;
-        }
-        else if (classname == "light_spot") {
-            emitType = EMIT_SPOTLIGHT;
-
-            innerCone = convert_str<double>(entity.get("_inner_cone", "30"));
-            outerCone = convert_str<double>(entity.get("_cone", "45"));
-
-            Vec3<float> angles = vec3_from_str(entity.get("angles"));
-
-            std::string pitchOverride = entity.get("pitch", "");
-            if (pitchOverride != "") {
-                angles.x = convert_str<float>(pitchOverride);
-            }
-
-            direction = direction_from_angles(
-                Vec3<double> {angles.x, angles.y, angles.z}
-            );
-
-            //std::cout << "Direction: <"
-            //    << direction.x << ", "
-            //    << direction.y << ", "
-            //    << direction.z << ">"
-            //    << std::endl;
-
-        }
-    }
-
-    const Vec3<float>& Light::get_coords(void) const {
-        return m_coords;
     }
 
     DWorldLight Light::to_worldlight(void) const {
-        float stopdot = (emitType == EMIT_SPOTLIGHT) ?
-            static_cast<float>(cos(radians(innerCone))) :
-            0.0f;
-
-        float stopdot2 = (emitType == EMIT_SPOTLIGHT) ?
-            static_cast<float>(cos(radians(outerCone))) :
-            0.0f;
-
-        //std::cout << " Normal: <"
-        //    << direction.x << ", "
-        //    << direction.y << ", "
-        //    << direction.z << ">" << std::endl;
-
-        return DWorldLight {
+        return DWorldLight{
             get_coords(),
+
             Vec3<float> {
-                static_cast<float>(r / 255.0),
-                static_cast<float>(g / 255.0),
-                static_cast<float>(b / 255.0),
+                static_cast<float>(r),
+                static_cast<float>(g),
+                static_cast<float>(b),
             },
+
             Vec3<float> {
                 static_cast<float>(direction.x),
                 static_cast<float>(direction.y),
                 static_cast<float>(direction.z),
             },
+
             m_cluster,
             emitType,
-            0x0,
+            style,
+
             stopdot,
             stopdot2,
-            0.0f,
-            0.0f,
-            0.0f,
-            0.0f,
-            1.0f,
-            0x0,
-            0,
-            0,
+            exponent,
+            radius,
+
+            static_cast<float>(c),
+            static_cast<float>(l),
+            static_cast<float>(q),
+
+            0x0, // flags
+            0,   // texinfo
+            0,   // owner
         };
     }
 

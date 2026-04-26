@@ -27,6 +27,24 @@
 #define NUM_BUMP_VECTS 3
 #endif
 
+enum { NUM_VERTEX_NORMALS = 162 };
+enum { NUM_CUBE_SIDES = 6 };
+
+static __device__ const int DWL_FLAGS_INAMBIENTCUBE = 0x0001;
+static __device__ const float ON_EPSILON = 0.1f;
+static __device__ const float COORD_EXTENT = 16384.0f;
+static __device__ const float WORLD_LIGHT_MIN_EMIT_SURFACE = 0.005f;
+
+static __device__ float3 safe_normalized(const float3& v) {
+    float vLen = len(v);
+
+    if (vLen <= 1e-20f) {
+        return make_float3();
+    }
+
+    return v / vLen;
+}
+
 namespace CUDARAD {
     static std::unique_ptr<RayTracer::CUDARayTracer> g_pRayTracer;
     static __device__ RayTracer::CUDARayTracer* g_pDeviceRayTracer;
@@ -103,14 +121,6 @@ namespace LeafAmbient {
             tex_light_to_linear(c.b, c.exp)
         );
     }
-
-    enum { NUM_VERTEX_NORMALS = 162 };
-    enum { NUM_CUBE_SIDES = 6 };
-
-    static __device__ const int DWL_FLAGS_INAMBIENTCUBE = 0x0001;
-    static __device__ const float ON_EPSILON = 0.1f;
-    static __device__ const float COORD_EXTENT = 16384.0f;
-    static __device__ const float WORLD_LIGHT_MIN_EMIT_SURFACE = 0.005f;
 
     static __device__ const float3 BOX_DIRECTIONS[NUM_CUBE_SIDES] = {
         {  1.0f,  0.0f,  0.0f },
@@ -295,16 +305,6 @@ namespace LeafAmbient {
             const float3& b
             ) {
         return make_float3(a.x * b.x, a.y * b.y, a.z * b.z);
-    }
-
-    static __device__ float3 safe_normalized(const float3& v) {
-        float vLen = len(v);
-
-        if (vLen <= 1e-20f) {
-            return make_float3();
-        }
-
-        return v / vLen;
     }
 
     static __device__ float3 find_sky_ambient(
@@ -583,6 +583,7 @@ namespace LeafAmbient {
             const float3& start,
             float3 lightBoxColor[NUM_CUBE_SIDES]
             ) {
+
         for (size_t i=0; i<cudaBSP.numWorldLights; ++i) {
             const BSP::DWorldLight& light = cudaBSP.worldLights[i];
 
@@ -608,6 +609,8 @@ namespace LeafAmbient {
                 continue;
             }
 
+            printf("zxc\n");
+
             float3 deltaNormal = safe_normalized(delta);
             float angleScale = engine_world_light_angle(
                 safe_normalized(make_float3(light.normal)),
@@ -630,6 +633,8 @@ namespace LeafAmbient {
                     lightBoxColor[side] +=
                         intensity * (directionScale * ratio);
                 }
+
+                printf("side %.1f %.1f %.1f", lightBoxColor[side].x, lightBoxColor[side].y, lightBoxColor[side].z);
             }
         }
     }
@@ -837,6 +842,44 @@ namespace DirectLighting {
 
             BSP::DWorldLight& light = cudaBSP.worldLights[lightIndex];
 
+            //if (light.type == BSP::EMIT_SKYLIGHT) {
+            //    printf("SKY HIT intensity %.2f %.2f %.2f normal %.2f %.2f %.2f\n",
+            //        light.intensity.x, light.intensity.y, light.intensity.z,
+            //        light.normal.x, light.normal.y, light.normal.z);
+            //}
+
+            //if (light.type == BSP::EMIT_SKYLIGHT) {
+            //    result += make_float3(64.0f, 64.0f, 64.0f);
+            //    continue;
+            //}
+
+            if (light.type == BSP::EMIT_SKYLIGHT) {
+                float3 sunDir = safe_normalized(make_float3(light.normal));
+
+                // Попробуй сначала так:
+                float3 wi = sunDir;
+
+                if (len(sampleNormal) > 0.0f) {
+                    float ndotl = dot(sampleNormal, wi);
+                    if (ndotl <= 0.0f)
+                        continue;
+                }
+
+                const float EPSILON = 0.5f;
+                float3 start = samplePos + sampleNormal * EPSILON;
+                float3 end = start + wi * COORD_EXTENT;
+
+                if (CUDARAD::g_pDeviceRayTracer->LOS_blocked(start, end))
+                    continue;
+
+                float ndotl = len(sampleNormal) > 0.0f
+                    ? fmaxf(dot(sampleNormal, wi), 0.0f)
+                    : 1.0f;
+
+                result += make_float3(light.intensity) * ndotl;
+                continue;
+            }
+
             if (!CUDABSP::cluster_in_pvs(light.cluster, pvs, numClusters)) {
                 // This light isn't within the sample's PVS. Skip it.
                 continue;
@@ -897,10 +940,10 @@ namespace DirectLighting {
             // Nudge the sample position towards the light slightly, to avoid
             // colliding with triangles that directly contain the sample
             // position.
-            samplePos -= dir * EPSILON;
+            float3 nudgedSamplePos = samplePos - dir * EPSILON;
 
             bool lightBlocked = CUDARAD::g_pDeviceRayTracer->LOS_blocked(
-                lightPos, samplePos
+                lightPos, nudgedSamplePos
             );
 
             if (lightBlocked) {
@@ -963,7 +1006,7 @@ namespace DirectLighting {
 
         if (faceInfo.face.lightOffset < 0) {
             if (primaryThread) {
-                printf("skip cuz lightOffset < 0\n");
+                //printf("skip cuz lightOffset < 0\n");
                 atomicAdd(pFacesCompleted, 1);
             }
             return;

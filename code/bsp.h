@@ -396,6 +396,12 @@ namespace BSP {
             double l;
             double q;
 
+            float stopdot;
+            float stopdot2;
+            float exponent;
+            float radius;
+            int32_t style;
+
             double innerCone;
             double outerCone;
             Vec3<double> direction;
@@ -404,12 +410,29 @@ namespace BSP {
 
             Light(const BSP& bsp, const Entity& entity);
 
+            bool parse_light_value_raw_optional(const std::string& value);
+
             inline double attenuate(double distance) const {
                 return c + l * distance + q * distance * distance;
             };
+             
+
+            void parse_light_value_raw(const std::string& value);
 
             const Vec3<float>& get_coords(void) const;
+            void parse_color(const std::string& value);
             DWorldLight to_worldlight(void) const;
+
+        private:
+            
+            void parse_direction(const Entity& entity);
+   
+            void parse_falloff(const Entity& entity);
+
+            void parse_generic(const BSP& bsp, const Entity& entity);
+            void parse_point(const BSP& bsp, const Entity& entity);
+            void parse_spot(const BSP& bsp, const Entity& entity);
+            void parse_environment(const BSP& bsp, const Entity& entity);
     };
 
     class FaceLightSampleProxy {
