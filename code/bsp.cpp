@@ -1,4 +1,4 @@
-#include <iostream>
+﻿#include <iostream>
 #include <sstream>
 #include <fstream>
 
@@ -15,8 +15,8 @@
 #include <cassert>
 #include <cmath>
 
-#include <gmtl/Matrix.h>
-#include <gmtl/MatrixOps.h>
+#include "include/gmtl/Matrix.h"
+#include "include/gmtl/MatrixOps.h"
 
 #include "bsp.h"
 #include "bsp_shared.h"
@@ -53,33 +53,38 @@ namespace BSP {
 
         int version = get_format_version();
 
-        if (version != 20) {
+        if (version < 19 || version > 21) {
             std::stringstream s;
 
-            s << "Unsupported BSP version: " << version;
+            s << "Unsupported BSP version: " << version << " (22 > supported > 18)";
 
             throw InvalidBSP(s.str());
         }
 
-        set_fullbright(m_header.lumps[LUMP_LIGHTING_HDR].fileLen == 0);
+        const bool isHDR = m_header.lumps[LUMP_LIGHTING_HDR].fileLen != 0;
+
+        set_hdr(isHDR);
 
         load_lump(file, LUMP_MODELS, m_models);
         load_lump(file, LUMP_PLANES, m_planes);
-        load_lump(file, LUMP_VERTICES, m_vertices);
+        load_lump(file, LUMP_VERTEXES, m_vertices);
         load_lump(file, LUMP_EDGES, m_edges);
         load_lump(file, LUMP_SURFEDGES, m_surfEdges);
 
-        load_lump(file, LUMP_FACES_HDR, m_dFaces);
-
-        // The Faces HDR lump can be empty...
-        if (m_dFaces.size() == 0) {
+        if (isHDR) {
+            load_lump(file, LUMP_FACES_HDR, m_dFaces);
+            load_lump(file, LUMP_LIGHTING_HDR, m_lightSamples);
+        }
+        
+        if (m_dFaces.empty()) {
             load_lump(file, LUMP_FACES, m_dFaces);
         }
 
-
-        if (!is_fullbright()) {
-            load_lump(file, LUMP_LIGHTING_HDR, m_lightSamples);
+        if (m_lightSamples.empty()) {
+            load_lump(file, LUMP_LIGHTING, m_lightSamples);
         }
+
+        set_fullbright(m_lightSamples.empty());
 
         load_lump(file, LUMP_TEXINFO, m_texInfos);
         load_lump(file, LUMP_TEXDATA, m_texDatas);
@@ -107,20 +112,30 @@ namespace BSP {
         }
 
         load_lump(file, LUMP_NODES, m_nodes);
-        load_lump(file, LUMP_LEAVES, m_leaves);
+        load_lump(file, LUMP_LEAFS, m_leaves);
 
         if (!is_fullbright()) {
-            load_lump(
+            /*load_lump(
                 file,
-                LUMP_LEAF_AMBIENT_INDEX_HDR,
+                LUMP_LIGHTMAPPAGES,
                 m_ambientLightIndices
-            );
+            );*/
 
-            load_lump(
-                file,
-                LUMP_LEAF_AMBIENT_LIGHTING_HDR,
-                m_ambientLightSamples
-            );
+           if (isHDR) {
+                load_lump(
+                    file,
+                    LUMP_LEAF_AMBIENT_LIGHTING_HDR,
+                    m_ambientLightSamples
+                );
+            }
+
+            if (m_ambientLightSamples.empty()) {
+                load_lump(
+                    file,
+                    LUMP_LEAF_AMBIENT_LIGHTING,
+                    m_ambientLightSamples
+                );
+            }
         }
 
         std::vector<char> entData;
@@ -131,7 +146,13 @@ namespace BSP {
         load_lights(m_entData);
 
         if (!is_fullbright()) {
-            load_lump(file, LUMP_WORLDLIGHTS_HDR, m_worldLights);
+            if (isHDR) {
+                load_lump(file, LUMP_WORLDLIGHTS_HDR, m_worldLights);
+            }
+            
+            if (m_worldLights.empty()) {
+                load_lump(file, LUMP_WORLDLIGHTS, m_worldLights);
+            }
         }
 
         load_visibility(file);
@@ -148,10 +169,20 @@ namespace BSP {
             ) {
 
         Lump& lump = m_header.lumps[lumpID];
+        
+        size_t lumpSize = lump.fileLen;
+
+        if (lumpSize == 0)
+            return;
 
         std::ifstream::off_type offset = lump.fileOffset;
-        size_t lumpSize = lump.fileLen;
         size_t numElems = lumpSize / sizeof(typename Container::value_type);
+
+        if (lumpSize % sizeof(typename Container::value_type))
+        {
+            printf("ValidateLump: odd size for lump %d", lumpID);
+            assert(0 && "odd size for lump");
+        }
 
         dest.resize(numElems);
 
@@ -189,7 +220,7 @@ namespace BSP {
         DVis& visLump = *reinterpret_cast<DVis*>(m_visLumpData.data());
         int32_t numClusters = visLump.numClusters;
 
-        int32_t (*byteOffsetPairs)[2] = &visLump.firstByteOffsetPair;
+        int32_t (*byteOffsetPairs)[2] = visLump.bitofs;
 
         m_visibility.resize(numClusters);
 
@@ -266,7 +297,7 @@ namespace BSP {
 
         int32_t lumpCount = gameLumpHeader.lumpCount;
 
-        GameLump* pGameLumps = &gameLumpHeader.firstGameLump;
+        GameLump* pGameLumps = (GameLump*)((&gameLumpHeader.lumpCount) + 1);
 
         for (int i=0; i<lumpCount; i++) {
             GameLump& gameLump = pGameLumps[i];
@@ -364,20 +395,11 @@ namespace BSP {
         return m_leaves;
     }
 
-    std::vector<DLeafAmbientIndex>& BSP::get_ambient_indices(void) {
-        return m_ambientLightIndices;
-    }
-
-    const std::vector<DLeafAmbientIndex>&
-    BSP::get_ambient_indices(void) const {
-        return m_ambientLightIndices;
-    }
-
-    std::vector<DLeafAmbientLighting>& BSP::get_ambient_samples(void) {
+    std::vector<CompressedLightCube>& BSP::get_ambient_samples(void) {
         return m_ambientLightSamples;
     }
 
-    const std::vector<DLeafAmbientLighting>&
+    const std::vector<CompressedLightCube>&
     BSP::get_ambient_samples(void) const {
         return m_ambientLightSamples;
     }
@@ -410,6 +432,14 @@ namespace BSP {
         m_fullbright = fullbright;
     }
 
+    bool BSP::is_hdr(void) const {
+        return m_hasHDR;
+    }
+
+    void BSP::set_hdr(bool hdr) {
+        m_hasHDR = hdr;
+    }
+
     bool BSP::has_visibility_data(void) const {
         return get_visibility().size() > 0;
     }
@@ -419,211 +449,168 @@ namespace BSP {
         write(f);
     }
 
+    static std::ofstream::off_type align_file_position(
+        std::ofstream& file,
+        std::ofstream::off_type alignment
+    ) {
+        std::ofstream::off_type currPosition = file.tellp();
+
+        if (alignment < 2) {
+            return currPosition;
+        }
+
+        std::ofstream::off_type newPosition =
+            ((currPosition + alignment - 1) / alignment) * alignment;
+
+        std::ofstream::off_type count = newPosition - currPosition;
+
+        if (count <= 0) {
+            return currPosition;
+        }
+
+        char smallBuffer[4096] = {};
+
+        if (count <= static_cast<std::ofstream::off_type>(sizeof(smallBuffer))) {
+            file.write(smallBuffer, count);
+        }
+        else {
+            std::vector<char> buffer(static_cast<size_t>(count), 0);
+            file.write(buffer.data(), buffer.size());
+        }
+
+        return newPosition;
+    }
+
     void BSP::write(std::ofstream& file) {
-        // Write out our current header.
-        // We'll fix the sizes and offsets later.
         file.seekp(0);
         file.write(reinterpret_cast<char*>(&m_header), sizeof(m_header));
 
-        // Keep track of which lumps go where.
-        std::unordered_map<int, std::ofstream::off_type> offsets;
+        align_file_position(file, 4);
 
-        // Keep track of lump sizes.
-        std::unordered_map<int, size_t> sizes;
+        save_lump(file, LUMP_MODELS, m_models);
+        save_lump(file, LUMP_PLANES, m_planes);
+        save_lump(file, LUMP_VERTEXES, m_vertices);
+        save_lump(file, LUMP_EDGES, m_edges);
+        save_lump(file, LUMP_SURFEDGES, m_surfEdges);
 
-        save_lump(
-            file, LUMP_MODELS, m_models,
-            offsets, sizes
-        );
-
-        save_lump(
-            file, LUMP_PLANES, m_planes,
-            offsets, sizes
-        );
-
-        save_lump(
-            file, LUMP_VERTICES, m_vertices,
-            offsets, sizes
-        );
-
-        save_lump(
-            file, LUMP_EDGES, m_edges,
-            offsets, sizes
-        );
-
-        save_lump(
-            file, LUMP_SURFEDGES, m_surfEdges,
-            offsets, sizes
-        );
+        std::vector<DFace> dFaces(m_dFaces);
 
         if (is_fullbright()) {
-            std::vector<DFace> dFaces(m_dFaces);
-
-            // Make sure the light offset is -1 for all DFace structures if
-            // we are in fullbright mode.
             for (DFace& dFace : dFaces) {
                 dFace.lightOffset = -1;
             }
+        }
 
-            save_lump(
-                file, LUMP_FACES, dFaces,
-                offsets, sizes
-            );
+        if (is_hdr()) {
+            save_lump(file, LUMP_FACES_HDR, dFaces);
 
-            save_lump(
-                file, LUMP_FACES_HDR, dFaces,
-                offsets, sizes
-            );
+            if (!is_fullbright()) {
+                save_lump(file, LUMP_LIGHTING_HDR, m_lightSamples);
+            }
         }
         else {
-            //for (DFace& dFace : m_dFaces) {
-            //    std::cout << dFace.texInfo << std::endl;
-            //}
+            save_lump(file, LUMP_FACES, dFaces);
 
-            save_lump(
-                file, LUMP_FACES, m_dFaces,
-                offsets, sizes
-            );
-
-            save_lump(
-                file, LUMP_FACES_HDR, m_dFaces,
-                offsets, sizes
-            );
-        }
-
-        if (!is_fullbright()) {
-            save_lump(
-                file, LUMP_LIGHTING_HDR, m_lightSamples,
-                offsets, sizes
-            );
-        }
-
-        save_lump(
-            file, LUMP_TEXINFO, m_texInfos,
-            offsets, sizes
-        );
-
-        save_lump(
-            file, LUMP_TEXDATA, m_texDatas,
-            offsets, sizes
-        );
-
-        //save_faces(file, offsets, sizes);
-
-        save_lump(
-            file, LUMP_NODES, m_nodes,
-            offsets, sizes
-        );
-
-        save_lump(
-            file, LUMP_LEAVES, m_leaves,
-            offsets, sizes
-        );
-
-        std::vector<char> entData(m_entData.size());
-        entData.assign(m_entData.begin(), m_entData.end());
-
-        save_lump(
-            file, LUMP_ENTITIES, entData,
-            offsets, sizes
-        );
-
-        if (!is_fullbright()) {
-            save_lights(file, offsets, sizes);
-
-            save_lump(
-                file, LUMP_LEAF_AMBIENT_INDEX_HDR, m_ambientLightIndices,
-                offsets, sizes
-            );
-
-            save_lump(
-                file, LUMP_LEAF_AMBIENT_LIGHTING_HDR, m_ambientLightSamples,
-                offsets, sizes
-            );
-
-            //// Temp hack for ambient lighting
-            //size_t numLeaves = m_leaves.size();
-            //
-            //std::vector<DLeafAmbientLighting> ambientLighting(numLeaves);
-            //
-            //for (DLeafAmbientLighting& ambient : ambientLighting) {
-            //    for (RGBExp32& sample : ambient.cube.color) {
-            //        sample.r = 128;
-            //        sample.g = 128;
-            //        sample.b = 128;
-            //        sample.exp = 0;
-            //    }
-            //
-            //    ambient.x = 128;
-            //    ambient.y = 128;
-            //    ambient.z = 128;
-            //}
-            //
-            //save_lump(
-            //    file, LUMP_LEAF_AMBIENT_LIGHTING_HDR, ambientLighting,
-            //    offsets, sizes
-            //);
-            //
-            //std::vector<DLeafAmbientIndex> ambientIndices(numLeaves);
-            //
-            //int i = 0;
-            //for (DLeafAmbientIndex& ambientIndex : ambientIndices) {
-            //    ambientIndex.ambientSampleCount = 1;
-            //    ambientIndex.firstAmbientSample = i;
-            //    i++;
-            //}
-            //
-            //save_lump(
-            //    file, LUMP_LEAF_AMBIENT_INDEX_HDR, ambientIndices,
-            //    offsets, sizes
-            //);
-        }
-
-        save_visibility(file, offsets, sizes);
-        save_gamelumps(file, offsets, sizes);
-
-        save_extras(file, offsets, sizes);
-
-        /* Lump offset and size fixup */
-        for (unsigned int i=0; i<HEADER_LUMPS; i++) {
-            if (offsets.find(i) == offsets.end()) {
-                // Unused lump; ignore
-                assert(sizes.find(i) == sizes.end());
-                continue;
+            if (!is_fullbright()) {
+                save_lump(file, LUMP_LIGHTING, m_lightSamples);
             }
-
-            Lump& lump = m_header.lumps[i];
-
-            lump.fileOffset = static_cast<int32_t>(offsets[i]);
-            lump.fileLen = static_cast<int32_t>(sizes[i]);
         }
 
-        // Write the fixed lump offsets and sizes.
+        save_lump(file, LUMP_TEXINFO, m_texInfos);
+        save_lump(file, LUMP_TEXDATA, m_texDatas);
+        save_lump(file, LUMP_NODES, m_nodes);
+        save_lump(file, LUMP_LEAFS, m_leaves);
+
+        std::vector<char> entData(m_entData.begin(), m_entData.end());
+        save_lump(file, LUMP_ENTITIES, entData);
+
+        if (!is_fullbright()) {
+            save_lights(file);
+
+            if (is_hdr()) {
+                save_lump(file, LUMP_LEAF_AMBIENT_LIGHTING_HDR, m_ambientLightSamples);
+            }
+            else {
+                save_lump(file, LUMP_LEAF_AMBIENT_LIGHTING, m_ambientLightSamples);
+            }
+        }
+
+        save_visibility(file);
+
+        save_gamelumps(file);
+
+        save_extras(file);
+
         file.seekp(0);
         file.write(reinterpret_cast<char*>(&m_header), sizeof(m_header));
     }
 
     template<typename Container>
     void BSP::save_lump(
-            std::ofstream& file,
-            const LumpType lumpID,
-            const Container& src,
-            std::unordered_map<int, std::ofstream::off_type>& offsets,
-            std::unordered_map<int, size_t>& sizes,
-            bool isExtraLump
-            ) {
+        std::ofstream& file,
+        const LumpType lumpID,
+        const Container& src,
+        bool isExtraLump) 
+    {
 
-        size_t size = src.size();
-        size *= sizeof(typename Container::value_type);
+        using ValueType = typename Container::value_type;
 
-        offsets[lumpID] = file.tellp();
-        sizes[lumpID] = size;
+        const int len =
+            static_cast<int>(src.size() * sizeof(ValueType));
 
-        file.write(reinterpret_cast<const char*>(src.data()), size);
+        Lump& lump = m_header.lumps[lumpID];
 
-        // TODO: Remove this. (Or do we need to remove it...?)
+        lump.fileOffset = len == 0 ? 0 : static_cast<int32_t>(file.tellp());
+        lump.fileLen = len;
+
+        if (src.empty())
+            return;
+
+        align_file_position(file, 1);
+
+        if (len > 0) {
+            file.write(reinterpret_cast<const char*>(src.data()), static_cast<std::streamsize>(len));
+        }
+
+        align_file_position(file, 4);
+
         if (!isExtraLump) {
             m_extraLumps.erase(lumpID);
+        }
+    }
+
+    void BSP::write_pending_lumps(std::ofstream& file) {
+        for (int lumpID = 0; lumpID < HEADER_LUMPS; ++lumpID) {
+            auto it = m_pendingLumps.find(lumpID);
+
+            if (it == m_pendingLumps.end()) {
+                continue;
+            }
+
+            PendingLump& pending = it->second;
+            Lump& lump = m_header.lumps[lumpID];
+
+            align_file_position(file, pending.alignment);
+
+            lump.fileOffset = static_cast<int32_t>(file.tellp());
+            lump.fileLen = static_cast<int32_t>(pending.data.size());
+            lump.version = pending.version;
+
+            if (pending.clearFourCC) {
+                lump.fourCC[0] = 0;
+                lump.fourCC[1] = 0;
+                lump.fourCC[2] = 0;
+                lump.fourCC[3] = 0;
+            }
+
+            if (!pending.data.empty()) {
+                file.write(
+                    reinterpret_cast<const char*>(pending.data.data()),
+                    static_cast<std::streamsize>(pending.data.size())
+                );
+            }
+
+            align_file_position(file, 4);
         }
     }
 
@@ -692,38 +679,28 @@ namespace BSP {
     //    );
     //}
 
-    void BSP::save_lights(
-            std::ofstream& file,
-            std::unordered_map<int, std::ofstream::off_type>& offsets,
-            std::unordered_map<int, size_t>& sizes
-            ) {
+    void BSP::save_lights(std::ofstream& file) {
 
-        if (m_worldLights.size() == 0) {
-            build_worldlights();
+        //if (m_worldLights.size() == 0) {
+       //     build_worldlights();
+        //}
+
+        if (is_hdr()) {
+            save_lump(file, LUMP_WORLDLIGHTS_HDR, m_worldLights);
         }
-
-        save_lump(
-            file, LUMP_WORLDLIGHTS_HDR, m_worldLights,
-            offsets, sizes
-        );
+        else {
+            save_lump(file, LUMP_WORLDLIGHTS, m_worldLights);
+        }
     }
 
-    void BSP::save_visibility(
-            std::ofstream& file,
-            std::unordered_map<int, std::ofstream::off_type>& offsets,
-            std::unordered_map<int, size_t>& sizes
-            ) {
+    void BSP::save_visibility(std::ofstream& file) {
 
         // Since we just keep the original visibility lump data around,
         // this is really easy.
-        save_lump(file, LUMP_VISIBILITY, m_visLumpData, offsets, sizes);
+        save_lump(file, LUMP_VISIBILITY, m_visLumpData);
     }
 
-    void BSP::save_extras(
-            std::ofstream& file,
-            std::unordered_map<int, std::ofstream::off_type>& offsets,
-            std::unordered_map<int, size_t>& sizes
-            ) {
+    void BSP::save_extras(std::ofstream& file) {
 
         using Pair = std::pair<int, std::vector<uint8_t>>;
 
@@ -733,43 +710,90 @@ namespace BSP {
 
             assert(m_extraLumps.find(lumpID) != m_extraLumps.end());
 
-            save_lump(
-                file, lumpID, lumpData,
-                offsets, sizes,
-                true    // This is an extra lump.
-            );
+            save_lump(file, lumpID, lumpData, true);
         }
     }
 
-    void BSP::save_gamelumps(
-            std::ofstream& file,
-            std::unordered_map<int, std::ofstream::off_type>& offsets,
-            std::unordered_map<int, size_t>& sizes
-            ) {
+    void BSP::save_gamelumps(std::ofstream& file) {
 
-        using Pair = std::pair<int32_t, std::vector<uint8_t>>;
+        Lump& lump = m_header.lumps[LUMP_GAME_LUMP];
 
-        for (const Pair& pair : m_extraGameLumps) {
-            int32_t gameLumpID = pair.first;
-            const std::vector<uint8_t>& gameLumpData = pair.second;
+        const int32_t lumpCount = static_cast<int32_t>(m_gameLumps.size());
 
-            save_single_gamelump(file, gameLumpID, gameLumpData);
+        int size =
+            sizeof(int32_t) + lumpCount * sizeof(GameLump);
+
+        for (const auto& pair : m_gameLumps) {
+            const int32_t id = pair.first;
+            const auto& data = m_extraGameLumps.at(id);
+            size += static_cast<int>(data.size());
         }
 
-        int32_t gameLumpCount = static_cast<int32_t>(m_gameLumps.size());
+        lump.fileOffset = static_cast<int32_t>(file.tellp());
+        lump.fileLen = size;
 
-        size_t size = sizeof(int32_t) + gameLumpCount * sizeof(GameLump);
+        file.write(
+            reinterpret_cast<const char*>(&lumpCount),
+            sizeof(int32_t)
+        );
 
-        offsets[LUMP_GAME_LUMP] = file.tellp();
-        sizes[LUMP_GAME_LUMP] = size;
+        int32_t dataOffset =
+            lump.fileOffset
+            + sizeof(int32_t)
+            + lumpCount * sizeof(GameLump);
 
-        file.write(reinterpret_cast<char*>(&gameLumpCount), sizeof(int32_t));
+        for (const auto& pair : m_gameLumps) {
+            const int32_t id = pair.first;
+            GameLump dict = pair.second;
 
-        for (const std::pair<int32_t, GameLump>& pair : m_gameLumps) {
-            const GameLump& gameLump = pair.second;
+            const auto& data = m_extraGameLumps.at(id);
+
+            dict.fileOffset = dataOffset;
+            dict.fileLen = static_cast<int32_t>(data.size());
+
             file.write(
-                reinterpret_cast<const char*>(&gameLump),
+                reinterpret_cast<const char*>(&dict),
                 sizeof(GameLump)
+            );
+
+            dataOffset += dict.fileLen;
+        }
+
+        for (const auto& pair : m_gameLumps) {
+            const int32_t id = pair.first;
+            const auto& data = m_extraGameLumps.at(id);
+
+            if (!data.empty()) {
+                file.write(
+                    reinterpret_cast<const char*>(data.data()),
+                    static_cast<std::streamsize>(data.size())
+                );
+            }
+        }
+
+        align_file_position(file, 4);
+
+        m_extraLumps.erase(LUMP_GAME_LUMP);
+    }
+
+    void BSP::dump_lumps() const {
+        for (int i = 0; i < HEADER_LUMPS; ++i) {
+            const Lump& l = m_header.lumps[i];
+
+            if (l.fileOffset == 0 && l.fileLen == 0) {
+                continue;
+            }
+
+            printf(
+                "%02d ofs=%d len=%d ver=%d fourCC=%02x%02x%02x%02x\n",
+                i,
+                l.fileOffset,
+                l.fileLen,
+                l.version,
+                (unsigned char)l.fourCC[0],
+                (unsigned char)l.fourCC[1],
+                (unsigned char)l.fourCC[2],
+                (unsigned char)l.fourCC[3]
             );
         }
     }
@@ -810,79 +834,24 @@ namespace BSP {
     }
 
     void BSP::init_ambient_samples(void) {
-        const float SAMPLE_SPACING_X = 128.0f;
-        const float SAMPLE_SPACING_Y = 128.0f;
-        const float SAMPLE_SPACING_Z = 256.0f;
-
-        m_ambientLightIndices.clear();
         m_ambientLightSamples.clear();
+        m_ambientLightSamples.resize(m_leaves.size());
 
-        for (DLeaf& leaf : m_leaves) {
-            if (leaf.contents & CONTENTS_SOLID) {
-                m_ambientLightIndices.push_back(DLeafAmbientIndex {0, 0});
-                continue;
+        for (size_t leafId = 0; leafId < m_leaves.size(); ++leafId) {
+            CompressedLightCube& cube = m_ambientLightSamples[leafId];
+
+            for (int side = 0; side < 6; ++side) {
+                cube.color[side] = RGBExp32{ 0, 0, 0, 0 };
             }
 
-            Vec3<float> leafSize {
-                static_cast<float>(leaf.maxs[0] - leaf.mins[0]),
-                static_cast<float>(leaf.maxs[1] - leaf.mins[1]),
-                static_cast<float>(leaf.maxs[2] - leaf.mins[2]),
-            };
+            const DLeaf& leaf = m_leaves[leafId];
 
-            size_t numSamplesX = static_cast<size_t>(
-                leafSize.x / SAMPLE_SPACING_X
-            );
-            size_t numSamplesY = static_cast<size_t>(
-                leafSize.y / SAMPLE_SPACING_Y
-            );
-            size_t numSamplesZ = static_cast<size_t>(
-                leafSize.z / SAMPLE_SPACING_Z
-            );
+            if (leaf.contents & CONTENTS_SOLID)
+                continue;
 
-            size_t numSamples = numSamplesX * numSamplesY * numSamplesZ;
-
-            m_ambientLightIndices.push_back(
-                DLeafAmbientIndex {
-                    static_cast<uint16_t>(numSamples),
-                    static_cast<uint16_t>(m_ambientLightSamples.size()),
-                }
-            );
-
-            for (size_t i=0; i<numSamplesZ; i++) {
-                uint8_t z = static_cast<uint8_t>(
-                    (static_cast<float>(i) + 0.5f)
-                    / static_cast<float>(numSamplesZ) * 255.0f
-                );
-
-                for (size_t j=0; j<numSamplesY; j++) {
-                    uint8_t y = static_cast<uint8_t>(
-                        (static_cast<float>(j) + 0.5f)
-                        / static_cast<float>(numSamplesY) * 255.0f
-                    );
-
-                    for (size_t k=0; k<numSamplesX; k++) {
-                        uint8_t x = static_cast<uint8_t>(
-                            (static_cast<float>(k) + 0.5f)
-                            / static_cast<float>(numSamplesX) * 255.0f
-                        );
-
-                        m_ambientLightSamples.push_back(
-                            DLeafAmbientLighting {
-                                {
-                                    {
-                                        {0, 255, 0, 0},
-                                        {0, 255, 0, 0},
-                                        {0, 255, 0, 0},
-                                        {0, 255, 0, 0},
-                                        {0, 255, 0, 0},
-                                        {0, 255, 0, 0},
-                                    },
-                                },
-                                x, y, z, 0x0
-                            }
-                        );
-                    }
-                }
+            // временный ambient, чтобы проверить что lump пишется и работает
+            for (int side = 0; side < 6; ++side) {
+                cube.color[side] = RGBExp32{ 16, 16, 16, 0 };
             }
         }
     }
@@ -897,77 +866,157 @@ namespace BSP {
         m_entData(entData) {}
 
     Entity EntityParser::next_ent(void) {
-        int entStart = -1;
-        std::string entStr = "";
+        auto skipWhitespaceAndComments = [&]() {
+            while (m_index < static_cast<int>(m_entData.size())) {
+                char c = m_entData[m_index];
 
-        while (m_index < static_cast<int>(m_entData.size())) {
-            char c = m_entData[m_index];
+                // whitespace
+                if (c <= 32) {
+                    m_index++;
+                    continue;
+                }
 
-            switch (c) {
-                case '{':
-                    assert(entStart == -1);
-                    entStart = m_index;
-                    break;
+                // ; comment or # comment
+                if (c == ';' || c == '#') {
+                    while (m_index < static_cast<int>(m_entData.size()) &&
+                        m_entData[m_index] != '\n') {
+                        m_index++;
+                    }
+                    continue;
+                }
 
-                case '}':
-                    assert(entStart != -1);
-                    int count = m_index - entStart - 1;
-                    entStr = m_entData.substr(entStart + 1, count);
-                    break;
-            }
+                // // comment
+                if (c == '/' &&
+                    m_index + 1 < static_cast<int>(m_entData.size()) &&
+                    m_entData[m_index + 1] == '/') {
+                    m_index += 2;
+                    while (m_index < static_cast<int>(m_entData.size()) &&
+                        m_entData[m_index] != '\n') {
+                        m_index++;
+                    }
+                    continue;
+                }
 
-            if (entStr.size() > 0) {
-                m_index++;
+                // /* */ comment
+                if (c == '/' &&
+                    m_index + 1 < static_cast<int>(m_entData.size()) &&
+                    m_entData[m_index + 1] == '*') {
+                    m_index += 2;
+                    while (m_index + 1 < static_cast<int>(m_entData.size())) {
+                        if (m_entData[m_index] == '*' &&
+                            m_entData[m_index + 1] == '/') {
+                            m_index += 2;
+                            break;
+                        }
+                        m_index++;
+                    }
+                    continue;
+                }
+
                 break;
             }
+            };
 
-            m_index++;
-        }
+        auto getToken = [&]() -> std::string {
+            skipWhitespaceAndComments();
 
-        assert(
-            entStr != ""
-                || (m_index >= static_cast<int>(m_entData.size())
-                    && entStart == -1)
-        );
+            if (m_index >= static_cast<int>(m_entData.size())) {
+                return "";
+            }
+
+            char c = m_entData[m_index];
+
+            // single-character entity delimiters
+            if (c == '{' || c == '}') {
+                m_index++;
+                return std::string(1, c);
+            }
+
+            std::string out;
+
+            // quoted token
+            if (c == '"') {
+                m_index++;
+
+                while (m_index < static_cast<int>(m_entData.size())) {
+                    c = m_entData[m_index++];
+
+                    if (c == '"') {
+                        break;
+                    }
+
+                    // Optional: support escaped quotes/backslashes.
+                    if (c == '\\' && m_index < static_cast<int>(m_entData.size())) {
+                        char next = m_entData[m_index];
+
+                        if (next == '"' || next == '\\') {
+                            out.push_back(next);
+                            m_index++;
+                            continue;
+                        }
+                    }
+
+                    out.push_back(c);
+                }
+
+                return out;
+            }
+
+            // regular token
+            while (m_index < static_cast<int>(m_entData.size())) {
+                c = m_entData[m_index];
+
+                if (c <= 32 || c == ';' || c == '#' || c == '{' || c == '}') {
+                    break;
+                }
+
+                if (c == '/' &&
+                    m_index + 1 < static_cast<int>(m_entData.size()) &&
+                    (m_entData[m_index + 1] == '/' || m_entData[m_index + 1] == '*')) {
+                    break;
+                }
+
+                out.push_back(c);
+                m_index++;
+            }
+
+            return out;
+            };
 
         Entity nextEnt;
 
-        if (entStr == "") {
+        std::string tok = getToken();
+
+        if (tok.empty()) {
             return nextEnt;
         }
 
-        std::string key = "";
-        int fieldStart = -1;
+        assert(tok == "{");
 
-        for (size_t i=0; i<entStr.size(); i++) {
-            char c = entStr[i];
+        while (true) {
+            std::string key = getToken();
 
-            if (c == '"') {
-                if (fieldStart == -1) {
-                    fieldStart = static_cast<int>(i);
-                }
-                else {
-                    size_t count = i - fieldStart - 1;
-                    std::string field = entStr.substr(
-                        fieldStart + 1,
-                        count
-                    );
-
-                    fieldStart = -1;
-
-                    if (key == "") {
-                        key = field;
-                    }
-                    else {
-                        //assert(!nextEnt.has_key(key));
-                        nextEnt.set(key, field);
-                        key = "";
-                    }
-                }
+            if (key.empty()) {
+                break;
             }
-        }
 
-        assert(key == "");
+            if (key == "}") {
+                break;
+            }
+
+            std::string value = getToken();
+
+            if (value.empty()) {
+                break;
+            }
+
+            if (value == "}") {
+                // malformed entity, but don't crash release builds
+                break;
+            }
+
+            nextEnt.set(key, value);
+        }
 
         return nextEnt;
     }
@@ -1066,9 +1115,17 @@ namespace BSP {
         double ty = m_texInfo.lightmapVecs[1][1];
         double tz = m_texInfo.lightmapVecs[1][2];
 
-        double nx = m_planeData.normal.x;
-        double ny = m_planeData.normal.y;
-        double nz = m_planeData.normal.z;
+        Vec3<float> n = m_planeData.normal;
+        if (m_faceData.side)
+        {
+            n.x *= -1.f;
+            n.y *= -1.f;
+            n.z *= -1.f;
+        }
+            
+        double nx = n.x;
+        double ny = n.y;
+        double nz = n.z;
 
         gmtl::Matrix<double, 3, 3> A;
 
@@ -1181,31 +1238,18 @@ namespace BSP {
     }
 
     Vec3<float> Face::xyz_from_lightmap_st(float s, float t) const {
-        double sOffset = m_texInfo.lightmapVecs[0][3];
-        double tOffset = m_texInfo.lightmapVecs[1][3];
+        double ds = s - m_texInfo.lightmapVecs[0][3];
+        double dt = t - m_texInfo.lightmapVecs[1][3];
 
-        double sMin = static_cast<double>(
-            m_faceData.lightmapTextureMinsInLuxels[0]
-        );
-        double tMin = static_cast<double>(
-            m_faceData.lightmapTextureMinsInLuxels[1]
-        );
+        double d = m_planeData.dist;
+        if (m_faceData.side)
+            d = -d;
 
-        gmtl::Matrix<double, 3, 1> B;
-        gmtl::Matrix<double, 3, 1> result;
+        double x = m_Ainv[0][0] * ds + m_Ainv[0][1] * dt + m_Ainv[0][2] * d;
+        double y = m_Ainv[1][0] * ds + m_Ainv[1][1] * dt + m_Ainv[1][2] * d;
+        double z = m_Ainv[2][0] * ds + m_Ainv[2][1] * dt + m_Ainv[2][2] * d;
 
-        B[0][0] = s - sOffset + sMin;
-        B[1][0] = t - tOffset + tMin;
-        B[2][0] = m_planeData.dist;
-        B.mState = gmtl::Matrix<double, 3, 1>::FULL;
-
-        gmtl::mult(result, m_Ainv, B);
-
-        return Vec3<float> {
-            static_cast<float>(result[0][0]),
-            static_cast<float>(result[1][0]),
-            static_cast<float>(result[2][0]),
-        };
+        return Vec3<float>{ float(x), float(y), float(z) };
     }
 
 

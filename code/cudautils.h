@@ -96,6 +96,33 @@ inline __device__ void prefix_sum(T (&in)[COUNT], T (&out)[COUNT]) {
 #endif
 }
 
+template<
+    typename T,
+    size_t COUNT,
+    size_t BLOCK_WIDTH,
+    size_t BLOCK_HEIGHT
+>
+__device__ inline void prefix_sum(T* in, T(&out)[COUNT]) {
+    out[0] = in[0];
+
+    for (size_t i = 1; i < COUNT; ++i) {
+        out[i] = out[i - 1] + in[i];
+    }
+}
+
+template<
+    typename T,
+    size_t COUNT,
+    size_t BLOCK_WIDTH,
+    size_t BLOCK_HEIGHT
+>
+__device__ inline void prefix_sum(T* in, T* out) {
+    out[0] = in[0];
+
+    for (size_t i = 1; i < COUNT; ++i) {
+        out[i] = out[i - 1] + in[i];
+    }
+}
 
 /** Block-wide filter algorithm. */
 template <

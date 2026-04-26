@@ -64,6 +64,8 @@ int main(int argc, char** argv) {
         return 1;
     }
 
+    pBSP->dump_lumps();
+
     if (!pBSP->has_visibility_data()) {
         std::cerr
             << "ERROR: BSP file " << filename << " has no visibility matrix!"
@@ -86,8 +88,7 @@ int main(int argc, char** argv) {
         ti.flags &= ~BSP::SURF_BUMPLIGHT;
     }
 
-    pBSP->build_worldlights();
-    pBSP->init_ambient_samples();
+    //pBSP->build_worldlights();
 
     print_cudainfo();
 
@@ -102,7 +103,7 @@ int main(int argc, char** argv) {
     std::cout << "*** Start RAD! ***" << std::endl;
 
     std::cout << "Compute direct lighting..." << std::endl;
-    CUDARAD::compute_direct_lighting(*pBSP, pCudaBSP);
+    //CUDARAD::compute_direct_lighting(*pBSP, pCudaBSP);
 
     //std::cout << "Run lightmap FXAA passes..." << std::endl;
     //const size_t NUM_FXAA_PASSES = 5;
@@ -116,21 +117,21 @@ int main(int argc, char** argv) {
     //std::cout << "Done!" << std::endl;
 
     std::cout << "Run direct lighting antialiasing pass..." << std::endl;
-    CUDARAD::antialias_direct_lighting(*pBSP, pCudaBSP);
+    //CUDARAD::antialias_direct_lighting(*pBSP, pCudaBSP);
 
     //std::cout << "Compute light bounces..." << std::endl;
     //CUDARAD::bounce_lighting(*pBSP, pCudaBSP);
 
     std::cout << "Compute ambient lighting..." << std::endl;
-    CUDARAD::compute_ambient_lighting(pCudaBSP);
+    //CUDARAD::compute_ambient_lighting(pCudaBSP);
 
     std::cout << "Convert light samples to RGBExp32..." << std::endl;
-    CUDABSP::convert_lightsamples(pCudaBSP);
+    //CUDABSP::convert_lightsamples(pCudaBSP);
 
     std::cout << "Update host BSP data..." << std::endl;
-    CUDABSP::update_bsp(*pBSP, pCudaBSP);
+    //CUDABSP::update_bsp(*pBSP, pCudaBSP);
 
-    CUDABSP::destroy_cudabsp(pCudaBSP);
+    //CUDABSP::destroy_cudabsp(pCudaBSP);
 
     /*
      * Mark the BSP as non-fullbright.
@@ -140,7 +141,7 @@ int main(int argc, char** argv) {
      */
     pBSP->set_fullbright(false);
 
-    pBSP->write("out.bsp");
+    pBSP->write("D:\\games\\CSS_LOVE\\cstrike\\maps\\out.bsp");
 
     std::cout << "Wrote to file \"out.bsp\"." << std::endl;
 

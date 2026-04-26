@@ -9,6 +9,7 @@
 namespace RayTracer {
     struct Triangle {
         float3 vertices[3];
+        int faceId;
     };
 
     enum class KDNodeType {NODE, LEAF};
@@ -26,6 +27,13 @@ namespace RayTracer {
         size_t numTris;
 
         KDNode* children;
+    };
+
+    struct RayHit {
+        bool hit;
+        size_t triangleId;
+        size_t faceId;
+        float t;
     };
 
     //class KDTree {
@@ -64,6 +72,11 @@ namespace RayTracer {
             CUDARayTracer& operator=(const CUDARayTracer& other) = delete;
 
             __host__ void add_triangles(const std::vector<Triangle>& tris);
+
+            __device__ RayHit trace_closest(
+                const float3& start,
+                const float3& end
+            );
 
             //__device__ Triangle* get_triangles(void);
             //__device__ size_t* get_tri_ids(void);

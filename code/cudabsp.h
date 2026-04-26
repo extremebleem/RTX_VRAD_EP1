@@ -18,7 +18,7 @@ namespace CUDABSP {
     // a face with 33 luxels in at least one dimension, and that really screws
     // things up since 33x33 isn't a multiple of 256...
     // So we allocate an additional 256 to account for possible overflow.
-    __device__ const size_t MAX_LUXELS_PER_FACE = 32 * 32 + 256;
+    __device__ const size_t MAX_LUXELS_PER_FACE = 4900;
 
     __device__ BSP::RGBExp32 rgbexp32_from_float3(float3 color);
 
@@ -46,8 +46,7 @@ namespace CUDABSP {
         BSP::DTexData* texDatas;
         BSP::DNode* nodes;
         BSP::DLeaf* leaves;
-        BSP::DLeafAmbientIndex* ambientIndices;
-        BSP::DLeafAmbientLighting* ambientLightSamples;
+        BSP::CompressedLightCube* ambientLightSamples;
         BSP::DWorldLight* worldLights;
         uint8_t* visMatrix;
 

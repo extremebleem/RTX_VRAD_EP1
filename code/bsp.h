@@ -9,11 +9,12 @@
 #include <vector>
 #include <unordered_set>
 #include <unordered_map>
+#include <map>
 #include <memory>
 
 #include <fstream>
 
-#include <gmtl/Matrix.h>
+#include "include/gmtl/Matrix.h"
 
 
 namespace BSP {
@@ -41,86 +42,95 @@ namespace BSP {
     /* Arbitrary "small" value */
     const double EPSILON = 1e-3;
 
-    enum LumpType {
-        LUMP_ENTITIES,
-        LUMP_PLANES,
-        LUMP_TEXDATA,
-        LUMP_VERTICES,
-        LUMP_VISIBILITY,
-        LUMP_NODES,
-        LUMP_TEXINFO,
-        LUMP_FACES,
-        LUMP_LIGHTING,
-        LUMP_OCCLUSION,
-        LUMP_LEAVES,
-        LUMP_FACEIDS,
-        LUMP_EDGES,
-        LUMP_SURFEDGES,
-        LUMP_MODELS,
-        LUMP_WORLDLIGHTS,
-        LUMP_LEAFFACES,
-        LUMP_LEAFBRUSHES,
-        LUMP_BRUSHES,
-        LUMP_BRUSHSIDES,
-        LUMP_AREAS,
-        LUMP_AREAPORTALS,
+    struct PendingLump {
+        std::vector<uint8_t> data;
+        int version = 0;
+        int alignment = 4;
+        bool clearFourCC = true;
+    };
+
+    static std::unordered_map<int, PendingLump> m_pendingLumps;
+
+    enum LumpType
+    {
+        LUMP_ENTITIES = 0,	// *
+        LUMP_PLANES = 1,	// *
+        LUMP_TEXDATA = 2,	// JAY: This is texdata now, previously LUMP_TEXTURES
+        LUMP_VERTEXES = 3,	// *
+        LUMP_VISIBILITY = 4,	// *
+        LUMP_NODES = 5,	// *
+        LUMP_TEXINFO = 6,	// *
+        LUMP_FACES = 7,	// *
+        LUMP_LIGHTING = 8,	// *
+        LUMP_OCCLUSION = 9,
+        LUMP_LEAFS = 10,	// *
+        // UNUSED
+        LUMP_EDGES = 12,	// *
+        LUMP_SURFEDGES = 13,	// *
+        LUMP_MODELS = 14,	// *
+        LUMP_WORLDLIGHTS = 15,	// 
+        LUMP_LEAFFACES = 16,	// *
+        LUMP_LEAFBRUSHES = 17,	// *
+        LUMP_BRUSHES = 18,	// *
+        LUMP_BRUSHSIDES = 19,	// *
+        LUMP_AREAS = 20,	// *
+        LUMP_AREAPORTALS = 21,	// *
         LUMP_PORTALS = 22,
-        LUMP_UNUSED0 = 22,
-        LUMP_PROPCOLLISION = 22,
         LUMP_CLUSTERS = 23,
-        LUMP_UNUSED1 = 23,
-        LUMP_PROPHULLS = 23,
         LUMP_PORTALVERTS = 24,
-        LUMP_UNUSED2 = 24,
-        LUMP_PROPHULLVERTS = 24,
         LUMP_CLUSTERPORTALS = 25,
-        LUMP_UNUSED3 = 25,
-        LUMP_PROPTRIS = 25,
-        LUMP_DISPINFO,
-        LUMP_ORIGINALFACES,
-        LUMP_PHYSDISP,
-        LUMP_PHYSCOLLIDE,
-        LUMP_VERTNORMALS,
-        LUMP_VERTNORMALINDICES,
-        LUMP_DISP_LIGHTMAP_ALPHAS,
-        LUMP_DISP_VERTS,
-        LUMP_DISP_LIGHTMAP_SAMPLE_POSITIONS,
-        LUMP_GAME_LUMP,
-        LUMP_LEAFWATERDATA,
-        LUMP_PRIMITIVES,
-        LUMP_PRIMVERTS,
-        LUMP_PRIMINDICES,
-        LUMP_PAKFILE,
-        LUMP_CLIPPORTALVERTS,
-        LUMP_CUBEMAPS,
-        LUMP_TEXDATA_STRING_DATA,
-        LUMP_TEXDATA_STRING_TABLE,
-        LUMP_OVERLAYS,
-        LUMP_LEAFMINDISTTOWATER,
-        LUMP_FACE_MACRO_TEXTURE_INFO,
-        LUMP_DISP_TRIS,
-        LUMP_PHYSCOLLIDESURFACE = 49,
-        LUMP_PROP_BLOB = 49,
-        LUMP_WATEROVERLAYS,
-        LUMP_LIGHTMAPPAGES = 51,
-        LUMP_LEAF_AMBIENT_INDEX_HDR = 51,
-        LUMP_LIGHTMAPPAGEINFOS = 52,
-        LUMP_LEAF_AMBIENT_INDEX = 52,
-        LUMP_LIGHTING_HDR,
-        LUMP_WORLDLIGHTS_HDR,
-        LUMP_LEAF_AMBIENT_LIGHTING_HDR,
-        LUMP_LEAF_AMBIENT_LIGHTING,
-        LUMP_XZIPPAKFILE,
-        LUMP_FACES_HDR,
-        LUMP_MAP_FLAGS,
-        LUMP_OVERLAY_FADES,
-        LUMP_OVERLAY_SYSTEM_LEVELS,
-        LUMP_PHYSLEVEL,
-        LUMP_DISP_MULTIBLEND,
+        LUMP_DISPINFO = 26,
+        LUMP_ORIGINALFACES = 27,
+        // UNUSED
+        LUMP_PHYSCOLLIDE = 29,
+        LUMP_VERTNORMALS = 30,
+        LUMP_VERTNORMALINDICES = 31,
+        LUMP_DISP_LIGHTMAP_ALPHAS = 32,
+        LUMP_DISP_VERTS = 33,		// CDispVerts
+        LUMP_DISP_LIGHTMAP_SAMPLE_POSITIONS = 34,	// For each displacement
+        //     For each lightmap sample
+        //         byte for index
+        //         if 255, then index = next byte + 255
+        //         3 bytes for barycentric coordinates
+        // The game lump is a method of adding game-specific lumps
+        // FIXME: Eventually, all lumps could use the game lump system
+        LUMP_GAME_LUMP = 35,
+        LUMP_LEAFWATERDATA = 36,
+        LUMP_PRIMITIVES = 37,
+        LUMP_PRIMVERTS = 38,
+        LUMP_PRIMINDICES = 39,
+        // A pak file can be embedded in a .bsp now, and the file system will search the pak
+        //  file first for any referenced names, before deferring to the game directory 
+        //  file system/pak files and finally the base directory file system/pak files.
+        LUMP_PAKFILE = 40,
+        LUMP_CLIPPORTALVERTS = 41,
+        // A map can have a number of cubemap entities in it which cause cubemap renders
+        // to be taken after running vrad.
+        LUMP_CUBEMAPS = 42,
+        LUMP_TEXDATA_STRING_DATA = 43,
+        LUMP_TEXDATA_STRING_TABLE = 44,
+        LUMP_OVERLAYS = 45,
+        LUMP_LEAFMINDISTTOWATER = 46,
+        LUMP_FACE_MACRO_TEXTURE_INFO = 47,
+        LUMP_DISP_TRIS = 48,
+        LUMP_PHYSCOLLIDESURFACE = 49,	// deprecated.  We no longer use win32-speicifc havok compression on terrain
+        LUMP_WATEROVERLAYS = 50,
+        LUMP_LIGHTMAPPAGES = 51,	// xbox: alternate lightdata implementation
+        LUMP_LIGHTMAPPAGEINFOS = 52,	// xbox: indexed by faces for alternate lightdata
+
+        // optional lumps for HDR
+        LUMP_LIGHTING_HDR = 53,
+        LUMP_WORLDLIGHTS_HDR = 54,
+        LUMP_LEAF_AMBIENT_LIGHTING_HDR = 55,	// NOTE: this data overrides part of the data stored in LUMP_LEAFS.
+        LUMP_LEAF_AMBIENT_LIGHTING = 56,	// NOTE: this data overrides part of the data stored in LUMP_LEAFS.
+
+        LUMP_XZIPPAKFILE = 57,   // xbox: maps may now have xzp's instead of zips stored. 
+        LUMP_FACES_HDR = 58,	// HDR maps may have different face data.
+        LUMP_MAP_FLAGS = 59,   // extended level-wide flags. not present in all levels
+
     };
 
     static_assert(LUMP_ENTITIES == 0, "Lump miscount!");
-    static_assert(LUMP_DISP_MULTIBLEND == 63, "Lump miscount!");
 
     struct Lump {
         int32_t fileOffset;
@@ -145,7 +155,7 @@ namespace BSP {
 
     struct DVis {
         int32_t numClusters;
-        int32_t firstByteOffsetPair[2];
+        int32_t bitofs[8][2];
     };
 
     struct DPlane {
@@ -268,7 +278,6 @@ namespace BSP {
         uint16_t firstFace;
         uint16_t numFaces;
         int16_t area;
-        int16_t _;  // unused
     };
 
     struct DLeaf {
@@ -327,21 +336,11 @@ namespace BSP {
         RGBExp32 color[6];
     };
 
-    struct DLeafAmbientLighting {
-        CompressedLightCube cube;
-        uint8_t x;
-        uint8_t y;
-        uint8_t z;
-        uint8_t _;  // unused
-    };
-
-    struct DLeafAmbientIndex {
-        uint16_t ambientSampleCount;
-        uint16_t firstAmbientSample;
-    };
-
     enum GameLumpID {
-        GAMELUMP_STATIC_PROPS = make_id('s', 'p', 'r', 'p'),
+        GAMELUMP_DETAIL_PROPS = 'dprp',
+        GAMELUMP_DETAIL_PROP_LIGHTING = 'dplt',
+        GAMELUMP_STATIC_PROPS = 'sprp',
+        GAMELUMP_DETAIL_PROP_LIGHTING_HDR = 'dplh',
     };
 
     struct GameLump {
@@ -354,7 +353,6 @@ namespace BSP {
 
     struct GameLumpHeader {
         int32_t lumpCount;
-        GameLump firstGameLump;
     };
 
     struct Edge {
@@ -517,8 +515,7 @@ namespace BSP {
             std::vector<Face> m_faces;
             std::vector<DNode> m_nodes;
             std::vector<DLeaf> m_leaves;
-            std::vector<DLeafAmbientIndex> m_ambientLightIndices;
-            std::vector<DLeafAmbientLighting> m_ambientLightSamples;
+            std::vector<CompressedLightCube> m_ambientLightSamples;
             std::vector<DWorldLight> m_worldLights;
 
             std::string m_entData;
@@ -537,9 +534,11 @@ namespace BSP {
 
             std::unordered_set<int> m_loadedLumps;
 
-            std::unordered_map<int32_t, GameLump> m_gameLumps;
+            std::map<int32_t, GameLump> m_gameLumps;
 
             bool m_fullbright;
+
+            bool m_hasHDR;
 
             void init(std::ifstream& file);
 
@@ -568,10 +567,10 @@ namespace BSP {
                 std::ofstream& file,
                 const LumpType lumpID,
                 const Container& src,
-                std::unordered_map<int, std::ofstream::off_type>& offsets,
-                std::unordered_map<int, size_t>& sizes,
-                bool isExtraLump=false
+                bool isExtraLump = false
             );
+
+            void write_pending_lumps(std::ofstream& file);
 
             //void save_faces(
             //    std::ofstream& file,
@@ -579,29 +578,13 @@ namespace BSP {
             //    std::unordered_map<int, size_t>& sizes
             //);
 
-            void save_lights(
-                std::ofstream& file,
-                std::unordered_map<int, std::ofstream::off_type>& offsets,
-                std::unordered_map<int, size_t>& sizes
-            );
+            void save_lights(std::ofstream& file);
 
-            void save_visibility(
-                std::ofstream& file,
-                std::unordered_map<int, std::ofstream::off_type>& offsets,
-                std::unordered_map<int, size_t>& sizes
-            );
+            void save_visibility(std::ofstream& file);
 
-            void save_extras(
-                std::ofstream& file,
-                std::unordered_map<int, std::ofstream::off_type>& offsets,
-                std::unordered_map<int, size_t>& sizes
-            );
+            void save_extras(std::ofstream& file);
 
-            void save_gamelumps(
-                std::ofstream& file,
-                std::unordered_map<int, std::ofstream::off_type>& offsets,
-                std::unordered_map<int, size_t>& sizes
-            );
+            void save_gamelumps(std::ofstream& file);
 
             template<typename Container>
             void save_single_gamelump(
@@ -643,13 +626,8 @@ namespace BSP {
             const std::vector<DNode>& get_nodes(void) const;
             const std::vector<DLeaf>& get_leaves(void) const;
 
-            std::vector<DLeafAmbientIndex>& get_ambient_indices(void);
-            const std::vector<DLeafAmbientIndex>&
-                get_ambient_indices(void) const;
-
-            std::vector<DLeafAmbientLighting>& get_ambient_samples(void);
-            const std::vector<DLeafAmbientLighting>&
-                get_ambient_samples(void) const;
+            std::vector<CompressedLightCube>& get_ambient_samples(void);
+            const std::vector<CompressedLightCube>& get_ambient_samples(void) const;
 
             const std::vector<DWorldLight>& get_worldlights(void) const;
             const std::vector<Light>& get_lights(void) const;
@@ -668,7 +646,12 @@ namespace BSP {
             bool is_fullbright(void) const;
             void set_fullbright(bool fullbright);
 
+            bool is_hdr(void) const;
+            void set_hdr(bool hdr);
+
             bool has_visibility_data(void) const;
+
+            void dump_lumps() const;
 
             void write(const std::string& filename);
             void write(std::ofstream& file);

@@ -222,10 +222,9 @@ namespace CUDABSP {
         size_t texDatasSize = sizeof(BSP::DTexData) * cudaBSP.numTexDatas;
         size_t nodesSize = sizeof(BSP::DNode) * cudaBSP.numNodes;
         size_t leavesSize = sizeof(BSP::DLeaf) * cudaBSP.numLeaves;
-        size_t ambientIndicesSize
-            = sizeof(BSP::DLeafAmbientIndex) * cudaBSP.numLeaves;
+
         size_t ambientLightSamplesSize
-            = sizeof(BSP::DLeafAmbientLighting)
+            = sizeof(BSP::CompressedLightCube)
                 * cudaBSP.numAmbientLightSamples;
         size_t worldLightsSize
             = sizeof(BSP::DWorldLight) * cudaBSP.numWorldLights;
@@ -372,17 +371,6 @@ namespace CUDABSP {
         );
 
         CUDA_CHECK_ERROR(
-            cudaMalloc(&cudaBSP.ambientIndices, ambientIndicesSize)
-        );
-        CUDA_CHECK_ERROR(
-            cudaMemcpy(
-                cudaBSP.ambientIndices, bsp.get_ambient_indices().data(),
-                ambientIndicesSize,
-                cudaMemcpyHostToDevice
-            )
-        );
-
-        CUDA_CHECK_ERROR(
             cudaMalloc(&cudaBSP.ambientLightSamples, ambientLightSamplesSize)
         );
         CUDA_CHECK_ERROR(
@@ -457,7 +445,6 @@ namespace CUDABSP {
         CUDA_CHECK_ERROR(cudaFree(cudaBSP.texDatas));
         CUDA_CHECK_ERROR(cudaFree(cudaBSP.nodes));
         CUDA_CHECK_ERROR(cudaFree(cudaBSP.leaves));
-        CUDA_CHECK_ERROR(cudaFree(cudaBSP.ambientIndices));
         CUDA_CHECK_ERROR(cudaFree(cudaBSP.ambientLightSamples));
         CUDA_CHECK_ERROR(cudaFree(cudaBSP.worldLights));
         CUDA_CHECK_ERROR(cudaFree(cudaBSP.visMatrix));
@@ -517,7 +504,7 @@ namespace CUDABSP {
         CUDA_CHECK_ERROR(
             cudaMemcpy(
                 bsp.get_ambient_samples().data(), cudaBSP.ambientLightSamples,
-                sizeof(BSP::DLeafAmbientLighting)
+                sizeof(BSP::CompressedLightCube)
                     * cudaBSP.numAmbientLightSamples,
                 cudaMemcpyDeviceToHost
             )

@@ -269,6 +269,49 @@ namespace RayTracer {
         }
     }
 
+    static __device__ bool intersect_t(
+        const float3& vertex1,
+        const float3& vertex2,
+        const float3& vertex3,
+        const float3& startPos,
+        const float3& endPos,
+        float& outT
+    ) {
+        const float EPSILON = 1e-6f;
+
+        float3 diff = endPos - startPos;
+        float dist = len(diff);
+        float3 dir = diff / dist;
+
+        float3 edge1 = vertex2 - vertex1;
+        float3 edge2 = vertex3 - vertex1;
+
+        float3 pVec = cross(dir, edge2);
+        float det = dot(edge1, pVec);
+
+        if (det < EPSILON)
+            return false;
+
+        float3 tVec = startPos - vertex1;
+
+        float u = dot(tVec, pVec);
+        if (u < 0.0f || u > det)
+            return false;
+
+        float3 qVec = cross(tVec, edge1);
+
+        float v = dot(dir, qVec);
+        if (v < 0.0f || u + v > det)
+            return false;
+
+        float t = dot(edge2, qVec) / det;
+
+        if (!(0.0f < t && t < dist))
+            return false;
+
+        outT = t;
+        return true;
+    }
 
     /***********************
      * CUDARayTracer Class *
@@ -344,6 +387,128 @@ namespace RayTracer {
             );
             CUDA_CHECK_ERROR(cudaDeviceSynchronize());
         }
+    }
+
+    __device__ RayHit CUDARayTracer::trace_closest(
+        const float3& startPos,
+        const float3& endPos
+    ) {
+        RayHit best;
+        best.hit = false;
+        best.triangleId = 0;
+        best.faceId = 0;
+        best.t = 3.402823466e+38F;
+
+        float3 dir = normalized(endPos - startPos);
+        float3 invDir = { 1.0f / dir.x, 1.0f / dir.y, 1.0f / dir.z };
+
+        struct StackEntry {
+            KDNode* pNode;
+            float3 start;
+            float3 end;
+        };
+
+        StackEntry stack[1024];
+        size_t stackSize = 0;
+
+        stack[stackSize++] = { m_pTreeRoot, startPos, endPos };
+
+        while (stackSize > 0) {
+            StackEntry& entry = stack[--stackSize];
+
+            KDNode* pNode = entry.pNode;
+            float3 start = entry.start;
+            float3 end = entry.end;
+            float len = dist(start, end);
+
+            switch (pNode->type) {
+            case KDNodeType::LEAF: {
+                for (size_t ti = 0; ti < pNode->numTris; ++ti) {
+                    size_t triId = pNode->triangleIDs[ti];
+                    Triangle& tri = m_triangles[triId];
+
+                    float t;
+
+                    bool hit = intersect_t(
+                        tri.vertices[2],
+                        tri.vertices[1],
+                        tri.vertices[0],
+                        startPos,
+                        endPos,
+                        t
+                    );
+
+                    if (hit && t < best.t) {
+                        best.hit = true;
+                        best.triangleId = triId;
+                        best.faceId = tri.faceId;
+                        best.t = t;
+                    }
+                }
+
+                break;
+            }
+
+            case KDNodeType::NODE: {
+                KDNode* children = pNode->children;
+
+                float t;
+                bool dirPositive;
+
+                switch (pNode->axis) {
+                case Axis::X:
+                    t = (pNode->pos - start.x) * invDir.x;
+                    dirPositive = dir.x >= 0.0f;
+                    break;
+
+                case Axis::Y:
+                    t = (pNode->pos - start.y) * invDir.y;
+                    dirPositive = dir.y >= 0.0f;
+                    break;
+
+                case Axis::Z:
+                default:
+                    t = (pNode->pos - start.z) * invDir.z;
+                    dirPositive = dir.z >= 0.0f;
+                    break;
+                }
+
+                if (t < 0.0f) {
+                    stack[stackSize++] = {
+                        &children[dirPositive ? 1 : 0],
+                        start,
+                        end
+                    };
+                }
+                else if (t >= len) {
+                    stack[stackSize++] = {
+                        &children[dirPositive ? 0 : 1],
+                        start,
+                        end
+                    };
+                }
+                else {
+                    float3 clipPoint = start + t * dir;
+
+                    stack[stackSize++] = {
+                        &children[dirPositive ? 0 : 1],
+                        start,
+                        clipPoint
+                    };
+
+                    stack[stackSize++] = {
+                        &children[dirPositive ? 1 : 0],
+                        clipPoint,
+                        end
+                    };
+                }
+
+                break;
+            }
+            }
+        }
+
+        return best;
     }
 
     __host__ void CUDARayTracer::add_triangles(

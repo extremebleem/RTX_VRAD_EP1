@@ -408,9 +408,9 @@ __global__ void map_samples_fxaa(
 
 
 __global__ void map_faces(
-        CUDABSP::CUDABSP* pCudaBSP,
-        CUDARAD::FaceInfo* faceInfos
-        ) {
+    CUDABSP::CUDABSP* pCudaBSP,
+    CUDARAD::FaceInfo* faceInfos
+) {
 
     size_t faceIndex = blockIdx.x * blockDim.x + threadIdx.x;
 
@@ -419,81 +419,106 @@ __global__ void map_faces(
     }
 
     faceInfos[faceIndex] = CUDARAD::FaceInfo(*pCudaBSP, faceIndex);
-
-    CUDARAD::FaceInfo& faceInfo = faceInfos[faceIndex];
-
-    size_t width = faceInfo.lightmapWidth;
-    size_t height = faceInfo.lightmapHeight;
-    size_t numSamples = faceInfo.lightmapSize;
-
-    size_t startIndex = faceInfo.lightmapStartIndex;
-
-    float3* lightSamples = &pCudaBSP->lightSamples[startIndex];
-
-    float3* results;
-    CUDA_CHECK_ERROR_DEVICE(
-        cudaMalloc(&results, sizeof(float3) * numSamples)
-    );
-
-    const size_t BLOCK_WIDTH = 16;
-    const size_t BLOCK_HEIGHT = 16;
-
-    dim3 gridDim(
-        div_ceil(width, BLOCK_WIDTH),
-        div_ceil(height, BLOCK_HEIGHT)
-    );
-
-    dim3 blockDim(BLOCK_WIDTH, BLOCK_HEIGHT);
-
-    KERNEL_LAUNCH_DEVICE(
-        map_samples_fxaa,
-        gridDim, blockDim,
-        pCudaBSP, &faceInfo,
-        lightSamples, results,
-        width, height
-    );
-
-    CUDA_CHECK_ERROR_DEVICE(cudaDeviceSynchronize());
-
-    /* Transfer the AA'd results back into the light sample buffer. */
-    memcpy(lightSamples, results, sizeof(float3) * numSamples);
-
-    //CUDA_CHECK_ERROR_DEVICE(cudaFree(faceInfoBuffer));
-    CUDA_CHECK_ERROR_DEVICE(cudaFree(results));
 }
 
-
 namespace CUDAFXAA {
+
     void antialias_lightsamples(CUDABSP::CUDABSP* pCudaBSP) {
         size_t numFaces;
 
         CUDA_CHECK_ERROR(
             cudaMemcpy(
-                &numFaces, &pCudaBSP->numFaces, sizeof(size_t),
+                &numFaces,
+                &pCudaBSP->numFaces,
+                sizeof(size_t),
                 cudaMemcpyDeviceToHost
             )
         );
 
-        /*
-         * Allocate an array of FaceInfo structures, which will be needed for
-         * each round of FXAA.
-         */
         CUDARAD::FaceInfo* faceInfos;
+
         CUDA_CHECK_ERROR(
             cudaMalloc(&faceInfos, sizeof(CUDARAD::FaceInfo) * numFaces)
         );
 
-        const size_t BLOCK_WIDTH = 1;
-        size_t numBlocks = div_ceil(numFaces, BLOCK_WIDTH);
+        const size_t FACE_BLOCK_WIDTH = 128;
+        size_t numBlocks = div_ceil(numFaces, FACE_BLOCK_WIDTH);
 
         KERNEL_LAUNCH(
             map_faces,
-            numBlocks, BLOCK_WIDTH,
+            numBlocks, FACE_BLOCK_WIDTH,
             pCudaBSP, faceInfos
         );
 
         CUDA_CHECK_ERROR(cudaDeviceSynchronize());
 
+        CUDARAD::FaceInfo* hostFaceInfos =
+            (CUDARAD::FaceInfo*)malloc(sizeof(CUDARAD::FaceInfo) * numFaces);
+
+        CUDA_CHECK_ERROR(
+            cudaMemcpy(
+                hostFaceInfos,
+                faceInfos,
+                sizeof(CUDARAD::FaceInfo) * numFaces,
+                cudaMemcpyDeviceToHost
+            )
+        );
+
+        const size_t BLOCK_WIDTH = 16;
+        const size_t BLOCK_HEIGHT = 16;
+
+        for (size_t faceIndex = 0; faceIndex < numFaces; ++faceIndex) {
+            CUDARAD::FaceInfo& faceInfo = hostFaceInfos[faceIndex];
+
+            size_t width = faceInfo.lightmapWidth;
+            size_t height = faceInfo.lightmapHeight;
+            size_t numSamples = faceInfo.lightmapSize;
+            size_t startIndex = faceInfo.lightmapStartIndex;
+
+            if (width == 0 || height == 0 || numSamples == 0) {
+                continue;
+            }
+
+            float3* lightSamples = &pCudaBSP->lightSamples[startIndex];
+
+            float3* results = nullptr;
+
+            CUDA_CHECK_ERROR(
+                cudaMalloc(&results, sizeof(float3) * numSamples)
+            );
+
+            dim3 gridDim(
+                div_ceil(width, BLOCK_WIDTH),
+                div_ceil(height, BLOCK_HEIGHT)
+            );
+
+            dim3 blockDim(BLOCK_WIDTH, BLOCK_HEIGHT);
+
+            KERNEL_LAUNCH(
+                map_samples_fxaa,
+                gridDim, blockDim,
+                pCudaBSP, &faceInfos[faceIndex],
+                lightSamples, results,
+                width, height
+            );
+
+            CUDA_CHECK_ERROR(cudaDeviceSynchronize());
+
+            CUDA_CHECK_ERROR(
+                cudaMemcpy(
+                    lightSamples,
+                    results,
+                    sizeof(float3) * numSamples,
+                    cudaMemcpyDeviceToDevice
+                )
+            );
+
+            CUDA_CHECK_ERROR(cudaFree(results));
+        }
+
+        free(hostFaceInfos);
+
         CUDA_CHECK_ERROR(cudaFree(faceInfos));
     }
+
 }
