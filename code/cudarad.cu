@@ -858,20 +858,18 @@ namespace DirectLighting {
             //}
 
             if (light.type == BSP::EMIT_SKYLIGHT) {
-                float3 sunDir = safe_normalized(make_float3(light.normal)) * -1.f;
+                float3 wi = safe_normalized(make_float3(light.normal)) * -1.0f;
 
-                // выбери тот знак, который у теб€ уже дал ndotl
-                float3 wi = sunDir;
-
-                float ndotl = fmaxf(dot(sampleNormal, wi), 0.0f);
+                float ndotl = dot(sampleNormal, wi);
                 if (ndotl <= 0.0f)
                     continue;
 
-                float3 start = samplePos + sampleNormal * 2.0f;
+                float3 start = samplePos + wi * 0.05f;
                 float3 end = start + wi * COORD_EXTENT;
 
-                if (!CUDARAD::g_pDeviceRayTracer->LOS_blocked_sun(start, end)) {
-                    result += make_float3(light.intensity) * ndotl * 255.f;
+                if (!CUDARAD::g_pDeviceRayTracer->LOS_blocked_sun(start, end))
+                {
+                    result += make_float3(light.intensity) * ndotl * 255.0f;
                 }
 
                 continue;
@@ -939,8 +937,14 @@ namespace DirectLighting {
             // position.
             float3 nudgedSamplePos = samplePos - dir * EPSILON;
 
+            const float SHADOW_EPSILON = 0.05f;
+
+            float3 shadowStart = samplePos + sampleNormal * SHADOW_EPSILON;
+            float3 shadowEnd = lightPos;
+
             bool lightBlocked = CUDARAD::g_pDeviceRayTracer->LOS_blocked(
-                lightPos, nudgedSamplePos
+                shadowStart,
+                shadowEnd
             );
 
             if (lightBlocked) {
@@ -1003,13 +1007,25 @@ namespace DirectLighting {
     }
 
     __device__ float3 sample_at(
-            CUDABSP::CUDABSP& cudaBSP,
-            CUDARAD::FaceInfo& faceInfo,
-            float s, float t
-            ) {
+        CUDABSP::CUDABSP& cudaBSP,
+        CUDARAD::FaceInfo& faceInfo,
+        float s,
+        float t
+    )
+    {
+        float ss = fminf(fmaxf(s + 0.5f, 0.5f), float(faceInfo.lightmapWidth) - 1.5f);
+        float tt = fminf(fmaxf(t + 0.5f, 0.5f), float(faceInfo.lightmapHeight) - 1.5f);
 
-        float3 samplePos = safe_luxel_pos(faceInfo, s, t);
-        return sample_at(cudaBSP, samplePos, faceInfo.faceNorm);
+        float3 n = faceInfo.faceNorm; // Ќ≈ переворачивать по face.side
+
+        float3 samplePos = faceInfo.xyz_from_st(ss, tt);
+
+        // маленький push наружу от своей поверхности
+        samplePos.x += n.x * 0.03125f;
+        samplePos.y += n.y * 0.03125f;
+        samplePos.z += n.z * 0.03125f;
+
+        return sample_at(cudaBSP, samplePos, n);
     }
 
     __global__ void map_faces(

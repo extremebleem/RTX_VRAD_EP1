@@ -734,148 +734,190 @@ namespace RayTracer {
         return false;
     }
 
+    __device__ bool intersects_shadow_twosided(
+        const float3& v0,
+        const float3& v1,
+        const float3& v2,
+        const float3& rayStart,
+        const float3& rayEnd,
+        float tMin = 0.0005f,
+        float tMaxBias = 0.0005f
+    ) {
+        constexpr float DET_EPS = 1e-8f;
+        constexpr float BARY_EPS = 1e-5f;
+
+        float3 ray = rayEnd - rayStart;
+        float rayLen = len(ray);
+
+        if (rayLen <= tMin + tMaxBias)
+            return false;
+
+        float3 dir = ray / rayLen;
+
+        float3 e1 = v1 - v0;
+        float3 e2 = v2 - v0;
+
+        float3 p = cross(dir, e2);
+        float det = dot(e1, p);
+
+        if (fabsf(det) < DET_EPS)
+            return false;
+
+        float invDet = 1.0f / det;
+
+        float3 s = rayStart - v0;
+        float u = dot(s, p) * invDet;
+
+        if (u < -BARY_EPS || u > 1.0f + BARY_EPS)
+            return false;
+
+        float3 q = cross(s, e1);
+        float v = dot(dir, q) * invDet;
+
+        if (v < -BARY_EPS || u + v > 1.0f + BARY_EPS)
+            return false;
+
+        float t = dot(e2, q) * invDet;
+
+        return t > tMin && t < rayLen - tMaxBias;
+    }
+
     __device__ bool CUDARayTracer::LOS_blocked_sun(
-            const float3& startPos, const float3& endPos
-            ) {
+        const float3& startPos,
+        const float3& endPos
+    ) {
+        constexpr float EPS = 1e-5f;
+        constexpr float PLANE_EPS = 1e-4f;
+        constexpr int MAX_STACK = 1024;
 
-        const float EPSILON = 1e-6f;
+        float3 ray = endPos - startPos;
+        float rayLen = len(ray);
 
-        float3 dir = normalized(endPos - startPos);
-        float3 invDir = make_float3(
-            1.0f / (dir.x + ((dir.x < 0) ? -EPSILON : EPSILON)),
-            1.0f / (dir.y + ((dir.y < 0) ? -EPSILON : EPSILON)),
-            1.0f / (dir.z + ((dir.z < 0) ? -EPSILON : EPSILON))
-        );
+        if (rayLen <= EPS)
+            return false;
+
+        float3 dir = ray / rayLen;
 
         struct StackEntry {
-            KDNode* pNode;
-            float3 start;
-            float3 end;
+            KDNode* node;
+            float tMin;
+            float tMax;
         };
 
-        StackEntry stack[1024];   // empty ascending stack
-        size_t stackSize = 0;
+        StackEntry stack[MAX_STACK];
+        int stackSize = 0;
 
-        stack[stackSize++] = {
-            m_pTreeRoot,
-            startPos,
-            endPos,
-        };
+        if (!m_pTreeRoot)
+            return false;
+
+        stack[stackSize++] = { m_pTreeRoot, 0.0f, rayLen };
 
         while (stackSize > 0) {
-            if (stackSize >= 1024) {
-                printf("ALERT: Raytracer stack size too big!!!\n");
-                return false;
+            StackEntry e = stack[--stackSize];
+
+            KDNode* pNode = e.node;
+            if (!pNode)
+                continue;
+
+            if (e.tMax <= e.tMin + EPS)
+                continue;
+
+            if (pNode->type == KDNodeType::LEAF) {
+                for (size_t ti = 0; ti < pNode->numTris; ++ti) {
+                    Triangle& tri = m_triangles[pNode->triangleIDs[ti]];
+
+                    if (tri.flags & BSP::SURF_SKY)
+                        continue;
+
+                    // Осторожно: SURF_TRANS часто бывает у alpha-test текстур.
+                    // Если такие текстуры должны блокировать солнце — не skip-ать их вслепую.
+                    if ((tri.flags & BSP::SURF_TRANS) && !(tri.flags & BSP::SURF_NODRAW))
+                        continue;
+
+                    if (intersects_shadow_twosided(
+                        tri.vertices[0],
+                        tri.vertices[1],
+                        tri.vertices[2],
+                        startPos,
+                        endPos,
+                        0.001f,
+                        0.001f
+                    )) {
+                        return true;
+                    }
+                }
+
+                continue;
             }
-
-            StackEntry& entry = stack[--stackSize];
-
-            KDNode* pNode = entry.pNode;
-            float3 start = entry.start;
-            float3 end = entry.end;
-
-            float len = dist(start, end);
 
             KDNode* children = pNode->children;
 
-            float t;
+            float originAxis;
+            float dirAxis;
 
-            switch (pNode->type) {
-                case KDNodeType::LEAF:
-                    for (size_t ti=0; ti<pNode->numTris; ti++) {
-                        Triangle& tri = m_triangles[pNode->triangleIDs[ti]];
+            switch (pNode->axis) {
+            case Axis::X:
+                originAxis = startPos.x;
+                dirAxis = dir.x;
+                break;
+            case Axis::Y:
+                originAxis = startPos.y;
+                dirAxis = dir.y;
+                break;
+            case Axis::Z:
+                originAxis = startPos.z;
+                dirAxis = dir.z;
+                break;
+            default:
+                continue;
+            }
 
-                        if (tri.flags & BSP::SURF_SKY)
-                            continue;
+            int leftChild = 0;
+            int rightChild = 1;
 
-                        if ((tri.flags & BSP::SURF_TRANS) && !(tri.flags & BSP::SURF_NODRAW)) {
-                            // Skip translucent faces, but keep nodraw faces.
-                            continue;
-                        }
+            // Луч почти параллелен split-plane.
+            if (fabsf(dirAxis) < EPS) {
+                float distToPlane = originAxis - pNode->pos;
 
-                        // The M-T intersection algorithm uses CCW vertex
-                        // winding, but Source uses CW winding. So, we need to
-                        // pass the vertices in reverse order to get backface
-                        // culling to work correctly.
-                        bool isLOSBlocked = intersects(
-                            tri.vertices[2], tri.vertices[1], tri.vertices[0],
-                            startPos, endPos
-                        );
+                if (distToPlane < -PLANE_EPS) {
+                    stack[stackSize++] = { &children[leftChild], e.tMin, e.tMax };
+                }
+                else if (distToPlane > PLANE_EPS) {
+                    stack[stackSize++] = { &children[rightChild], e.tMin, e.tMax };
+                }
+                else {
+                    // На самой плоскости — надо проверить оба child-а.
+                    if (stackSize + 2 >= MAX_STACK)
+                        return true; // conservative: лучше тень, чем leak
 
-                        if (isLOSBlocked) {
-                            return true;
-                        }
-                    }
+                    stack[stackSize++] = { &children[rightChild], e.tMin, e.tMax };
+                    stack[stackSize++] = { &children[leftChild],  e.tMin, e.tMax };
+                }
 
-                    break;
+                continue;
+            }
 
-                case KDNodeType::NODE:
-                    bool dirPositive;
+            float splitT = (pNode->pos - originAxis) / dirAxis;
 
-                    switch (pNode->axis) {
-                        case Axis::X:
-                            t = (pNode->pos - start.x) * invDir.x;
-                            dirPositive = dir.x >= 0.0f;
-                            break;
+            int nearChild = dirAxis >= 0.0f ? leftChild : rightChild;
+            int farChild = dirAxis >= 0.0f ? rightChild : leftChild;
 
-                        case Axis::Y:
-                            t = (pNode->pos - start.y) * invDir.y;
-                            dirPositive = dir.y >= 0.0f;
-                            break;
+            if (splitT <= e.tMin - PLANE_EPS) {
+                stack[stackSize++] = { &children[farChild], e.tMin, e.tMax };
+            }
+            else if (splitT >= e.tMax + PLANE_EPS) {
+                stack[stackSize++] = { &children[nearChild], e.tMin, e.tMax };
+            }
+            else {
+                if (stackSize + 2 >= MAX_STACK)
+                    return true; // conservative
 
-                        case Axis::Z:
-                            t = (pNode->pos - start.z) * invDir.z;
-                            dirPositive = dir.z >= 0.0f;
-                            break;
-                    }
+                float t0 = fmaxf(e.tMin, splitT);
+                float t1 = fminf(e.tMax, splitT);
 
-                    if (t < 0.0) {
-                        // Plane is "behind" the line start.
-                        // Recurse on the right side if dir is positive.
-                        // Recurse on the left side if dir is negative.
-
-                        stack[stackSize++] = {
-                            &children[dirPositive ? 1 : 0],
-                            start,
-                            end,
-                        };
-                    }
-                    else if (t >= len) {
-                        // Plane is "ahead" of the line end.
-                        // Recurse on the left side if dir is positive.
-                        // Recurse on the right side if dir is negative.
-
-                        stack[stackSize++] = {
-                            &children[dirPositive ? 0 : 1],
-                            start,
-                            end
-                        };
-                    }
-                    else {
-                        // The line segment straddles the plane.
-                        // Clip the line and recurse on both sides.
-
-                        float3 clipPoint = start + t * dir;
-
-                        stack[stackSize++] = {
-                            &children[dirPositive ? 0 : 1],
-                            start,
-                            clipPoint,
-                        };
-
-                        if (stackSize >= 1024) {
-                            printf("ALERT: Stack size too big!!!\n");
-                            return false;
-                        }
-
-                        stack[stackSize++] = {
-                            &children[dirPositive ? 1 : 0],
-                            clipPoint,
-                            end,
-                        };
-                    }
-
-                    break;
+                // Far first, near second.
+                stack[stackSize++] = { &children[farChild],  t0, e.tMax };
+                stack[stackSize++] = { &children[nearChild], e.tMin, t1 };
             }
         }
 
