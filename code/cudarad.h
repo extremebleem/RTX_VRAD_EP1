@@ -6,6 +6,13 @@
 #include "bsp.h"
 #include "cudabsp.h"
 
+static inline bool vec_equal(
+    const BSP::Vec3<float>& a,
+    const BSP::Vec3<float>& b
+) {
+    return a.x == b.x && a.y == b.y && a.z == b.z;
+}
+
 namespace CUDARAD {
     struct FaceInfo {
         BSP::DFace face;

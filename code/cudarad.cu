@@ -858,14 +858,15 @@ namespace DirectLighting {
             //}
 
             if (light.type == BSP::EMIT_SKYLIGHT) {
-                float3 wi = safe_normalized(make_float3(light.normal)) * -1.0f;
+                float3 n = safe_normalized(sampleNormal);
+                float3 sunDir = safe_normalized(make_float3(light.normal)) * -1.0f;
 
-                float ndotl = dot(sampleNormal, wi);
+                float ndotl = dot(n, sunDir);
                 if (ndotl <= 0.0f)
                     continue;
 
-                float3 start = samplePos + wi * 0.05f;
-                float3 end = start + wi * COORD_EXTENT;
+                float3 start = samplePos + n * 0.25f + sunDir * 0.001f;
+                float3 end = start + sunDir * COORD_EXTENT;
 
                 if (!CUDARAD::g_pDeviceRayTracer->LOS_blocked_sun(start, end))
                 {
@@ -1861,41 +1862,86 @@ namespace CUDARAD {
         for (const BSP::Face& face : bsp.get_faces()) {
             int32_t flags = face.get_texinfo().flags;
 
-            //if (flags & BSP::SURF_NODRAW) continue;
-            if (flags & BSP::SURF_SKY) continue;
-            if (flags & BSP::SURF_TRANS) continue;
-            if (flags & BSP::SURF_TRIGGER) continue;
-            if (flags & BSP::SURF_NOLIGHT) continue;
+            if (flags & BSP::SURF_SKY)
+                continue;
+
+            if (flags & BSP::SURF_TRIGGER)
+                continue;
 
             if ((flags & BSP::SURF_TRANS) && !(flags & BSP::SURF_NODRAW)) {
                 // Skip translucent faces, but keep nodraw faces.
                 continue;
             }
 
-            std::vector<BSP::Edge>::const_iterator pEdge
-                = face.get_edges().begin();
+            const std::vector<BSP::Edge>& edges = face.get_edges();
 
-            BSP::Vec3<float> vertex1 = (pEdge++)->vertex1;
-            BSP::Vec3<float> vertex2;
-            BSP::Vec3<float> vertex3 = (pEdge++)->vertex1;
+            if (edges.size() < 3)
+                continue;
 
-            do {
-                vertex2 = vertex3;
-                vertex3 = (pEdge++)->vertex1;
+            std::vector<BSP::Vec3<float>> verts;
+            verts.reserve(edges.size());
 
-                RayTracer::Triangle tri {
+            // First edge: assume vertex1 is the first polygon vertex.
+            verts.push_back(edges[0].vertex1);
+
+            BSP::Vec3<float> current = edges[0].vertex2;
+
+            verts.push_back(current);
+
+            for (size_t ei = 1; ei < edges.size(); ++ei) {
+                const BSP::Edge& edge = edges[ei];
+
+                BSP::Vec3<float> next;
+
+                // Continue the polygon chain.
+                if (vec_equal(edge.vertex1, current)) {
+                    next = edge.vertex2;
+                }
+                else if (vec_equal(edge.vertex2, current)) {
+                    next = edge.vertex1;
+                }
+                else {
+                    // Fallback: if get_edges() already stores oriented edges,
+                    // use vertex1 like the old code did.
+                    next = edge.vertex1;
+                }
+
+                // Avoid duplicating the closing vertex.
+                if (ei + 1 < edges.size()) {
+                    verts.push_back(next);
+                }
+
+                current = next;
+            }
+
+            if (verts.size() < 3)
+                continue;
+
+            const float3 a = make_float3(verts[0]);
+
+            for (size_t i = 1; i + 1 < verts.size(); ++i) {
+                float3 b = make_float3(verts[i]);
+                float3 c = make_float3(verts[i + 1]);
+
+                float3 e1 = b - a;
+                float3 e2 = c - a;
+
+                // Skip degenerate triangles.
+                if (len(cross(e1, e2)) <= 1e-4f)
+                    continue;
+
+                RayTracer::Triangle tri{
                     {
-                        make_float3(vertex1),
-                        make_float3(vertex2),
-                        make_float3(vertex3),
+                        a,
+                        b,
+                        c,
                     },
                     static_cast<int>(face.id),
-                    face.get_texinfo().flags
+                    flags
                 };
 
                 triangles.push_back(tri);
-
-            } while (pEdge != face.get_edges().end());
+            }
         }
 
         g_pRayTracer->add_triangles(triangles);
