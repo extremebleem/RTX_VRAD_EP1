@@ -67,7 +67,7 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    pBSP->dump_lumps();
+    //pBSP->dump_lumps();
 
     if (!pBSP->has_visibility_data()) {
         std::cerr
@@ -120,13 +120,13 @@ int main(int argc, char** argv) {
     //std::cout << "Done!" << std::endl;
 
     std::cout << "Run direct lighting antialiasing pass..." << std::endl;
-    CUDARAD::antialias_direct_lighting(*pBSP, pCudaBSP);
+    //CUDARAD::antialias_direct_lighting(*pBSP, pCudaBSP);
 
     std::cout << "Compute light bounces..." << std::endl;
     //CUDARAD::bounce_lighting(*pBSP, pCudaBSP);
 
     std::cout << "Compute ambient lighting..." << std::endl;
-    CUDARAD::compute_leaf_ambient(pCudaBSP);
+    //CUDARAD::compute_leaf_ambient(pCudaBSP);
 
     std::cout << "Convert light samples to RGBExp32..." << std::endl;
     CUDABSP::convert_lightsamples(pCudaBSP);

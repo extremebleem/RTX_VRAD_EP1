@@ -19,10 +19,12 @@
     <ClInclude Include="cudautils.h" />
     <ClInclude Include="fxaa.h" />
     <ClInclude Include="raytracer.h" />
+    <ClInclude Include="raytracer_optix.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="silkrad.cpp" />
     <ClCompile Include="bsp.cpp" />
+    <ClCompile Include="raytracer_optix.cpp" />
   </ItemGroup>
   <ItemGroup>
     <CudaCompile Include="bsp_shared.cpp" />
@@ -30,6 +32,17 @@
     <CudaCompile Include="cudarad.cu" />
     <CudaCompile Include="fxaa.cu" />
     <CudaCompile Include="raytracer.cu" />
+  </ItemGroup>
+  <ItemGroup>
+    <CustomBuild Include="raytracer_optix.cu">
+      <FileType>Document</FileType>
+      <Command Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">"$(CudaToolkitBinDir)\nvcc.exe" --use-local-env -ptx --machine 64 -std=c++17 -I"$(OPTIX_PATH)\include" -I"$(CUDA_PATH)\include" -o "$(OutDir)raytracer_optix.ptx" "%(FullPath)"</Command>
+      <Outputs Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">$(OutDir)raytracer_optix.ptx</Outputs>
+      <Message Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Compiling OptiX device program %(Filename)%(Extension) to PTX...</Message>
+      <Command Condition="'$(Configuration)|$(Platform)'=='Release|x64'">"$(CudaToolkitBinDir)\nvcc.exe" --use-local-env -ptx --machine 64 -std=c++17 -I"$(OPTIX_PATH)\include" -I"$(CUDA_PATH)\include" -o "$(OutDir)raytracer_optix.ptx" "%(FullPath)"</Command>
+      <Outputs Condition="'$(Configuration)|$(Platform)'=='Release|x64'">$(OutDir)raytracer_optix.ptx</Outputs>
+      <Message Condition="'$(Configuration)|$(Platform)'=='Release|x64'">Compiling OptiX device program %(Filename)%(Extension) to PTX...</Message>
+    </CustomBuild>
   </ItemGroup>
   <PropertyGroup Label="Globals">
     <ProjectGuid>{9B1E0F9B-778F-4FB9-A089-52A58C3DA8EA}</ProjectGuid>
@@ -63,8 +76,8 @@
   <PropertyGroup Label="UserMacros" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <LinkIncremental>true</LinkIncremental>
-    <IncludePath>$(ProjectDir)include;$(CUDA_PATH_V12_8)\include;$(IncludePath)</IncludePath>
-    <LibraryPath>$(CUDA_PATH_V12_8)\lib\x64;$(LibraryPath)</LibraryPath>
+    <IncludePath>$(ProjectDir)include;$(OPTIX_PATH)\include;$(CUDA_PATH)\include;$(IncludePath)</IncludePath>
+    <LibraryPath>$(OPTIX_PATH)\lib\x64;$(CUDA_PATH)\lib\x64;$(LibraryPath)</LibraryPath>
   </PropertyGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <ClCompile>

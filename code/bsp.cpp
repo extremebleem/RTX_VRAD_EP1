@@ -1,4 +1,4 @@
-﻿#include <iostream>
+#include <iostream>
 #include <sstream>
 #include <fstream>
 
@@ -132,6 +132,17 @@ namespace BSP {
 
         load_lump(file, LUMP_NODES, m_nodes);
         load_lump(file, LUMP_LEAFS, m_leaves);
+        load_lump(file, LUMP_LEAFBRUSHES, m_leafBrushes);
+        load_lump(file, LUMP_BRUSHES, m_brushes);
+        load_lump(file, LUMP_BRUSHSIDES, m_brushSides);
+        load_lump(file, LUMP_DISPINFO, m_dispInfos);
+        load_lump(file, LUMP_DISP_VERTS, m_dispVerts);
+        load_lump(file, LUMP_DISP_TRIS, m_dispTris);
+        load_lump(
+            file,
+            LUMP_DISP_LIGHTMAP_SAMPLE_POSITIONS,
+            m_dispLightmapSamplePositions
+        );
 
         std::vector<char> entData;
         load_lump(file, LUMP_ENTITIES, entData);
@@ -314,28 +325,70 @@ namespace BSP {
         for (int i=0; i<lumpCount; i++) {
             GameLump& gameLump = pGameLumps[i];
 
-            switch (gameLump.id) {
-                case GAMELUMP_STATIC_PROPS:
-                // case GAMELUMP_STATIC_PROPS: {
-                    // std::vector<>
+            std::vector<uint8_t> extraGameLumpData;
 
-                    // break;
-                // }
-                default: {
-                    std::vector<uint8_t> extraGameLumpData;
+            load_single_gamelump(
+                file,
+                gameLump,
+                extraGameLumpData
+            );
 
-                    load_single_gamelump(
-                        file,
-                        gameLump,
-                        extraGameLumpData
-                    );
-
-                    m_extraGameLumps[gameLump.id]
-                        = std::move(extraGameLumpData);
-                }
+            if (gameLump.id == GAMELUMP_STATIC_PROPS) {
+                load_static_props_gamelump(extraGameLumpData);
             }
 
+            m_extraGameLumps[gameLump.id]
+                = std::move(extraGameLumpData);
+
             m_gameLumps[gameLump.id] = gameLump;
+        }
+    }
+
+    template<typename T>
+    static bool read_gamelump_array(
+        const std::vector<uint8_t>& data,
+        size_t& offset,
+        std::vector<T>& out
+    ) {
+        if (offset + sizeof(int32_t) > data.size()) {
+            return false;
+        }
+
+        int32_t count = 0;
+        std::memcpy(&count, data.data() + offset, sizeof(count));
+        offset += sizeof(count);
+
+        if (count < 0) {
+            return false;
+        }
+
+        size_t bytes = static_cast<size_t>(count) * sizeof(T);
+        if (offset + bytes > data.size()) {
+            return false;
+        }
+
+        out.resize(static_cast<size_t>(count));
+        if (bytes > 0) {
+            std::memcpy(out.data(), data.data() + offset, bytes);
+        }
+        offset += bytes;
+        return true;
+    }
+
+    void BSP::load_static_props_gamelump(const std::vector<uint8_t>& data) {
+        m_staticProps = StaticPropData{};
+
+        size_t offset = 0;
+        if (!read_gamelump_array(data, offset, m_staticProps.dict)) {
+            return;
+        }
+        if (!read_gamelump_array(data, offset, m_staticProps.leaves)) {
+            m_staticProps = StaticPropData{};
+            return;
+        }
+        if (!read_gamelump_array(data, offset, m_staticProps.props)) {
+            m_staticProps = StaticPropData{};
+            return;
         }
     }
 
@@ -405,6 +458,39 @@ namespace BSP {
 
     const std::vector<DLeaf>& BSP::get_leaves(void) const {
         return m_leaves;
+    }
+
+    const std::vector<uint16_t>& BSP::get_leafbrushes(void) const {
+        return m_leafBrushes;
+    }
+
+    const std::vector<DBrush>& BSP::get_brushes(void) const {
+        return m_brushes;
+    }
+
+    const std::vector<DBrushSide>& BSP::get_brushsides(void) const {
+        return m_brushSides;
+    }
+
+    const std::vector<DispInfo>& BSP::get_dispinfos(void) const {
+        return m_dispInfos;
+    }
+
+    const std::vector<DispVert>& BSP::get_dispverts(void) const {
+        return m_dispVerts;
+    }
+
+    const std::vector<DispTri>& BSP::get_disptris(void) const {
+        return m_dispTris;
+    }
+
+    const std::vector<uint8_t>&
+    BSP::get_disp_lightmap_sample_positions(void) const {
+        return m_dispLightmapSamplePositions;
+    }
+
+    const StaticPropData& BSP::get_static_props(void) const {
+        return m_staticProps;
     }
 
     std::vector<CompressedLightCube>& BSP::get_ambient_samples(void) {
@@ -532,6 +618,17 @@ namespace BSP {
         save_lump(file, LUMP_TEXDATA, m_texDatas);
         save_lump(file, LUMP_NODES, m_nodes);
         save_lump(file, LUMP_LEAFS, m_leaves);
+        save_lump(file, LUMP_LEAFBRUSHES, m_leafBrushes);
+        save_lump(file, LUMP_BRUSHES, m_brushes);
+        save_lump(file, LUMP_BRUSHSIDES, m_brushSides);
+        save_lump(file, LUMP_DISPINFO, m_dispInfos);
+        save_lump(file, LUMP_DISP_VERTS, m_dispVerts);
+        save_lump(file, LUMP_DISP_TRIS, m_dispTris);
+        save_lump(
+            file,
+            LUMP_DISP_LIGHTMAP_SAMPLE_POSITIONS,
+            m_dispLightmapSamplePositions
+        );
 
         std::vector<char> entData(m_entData.begin(), m_entData.end());
         save_lump(file, LUMP_ENTITIES, entData);
@@ -832,6 +929,15 @@ namespace BSP {
     const std::unordered_map<int, std::vector<uint8_t>>&
     BSP::get_extras(void) const {
         return m_extraLumps;
+    }
+
+    const std::unordered_map<int32_t, std::vector<uint8_t>>&
+    BSP::get_extra_gamelumps(void) const {
+        return m_extraGameLumps;
+    }
+
+    const std::map<int32_t, GameLump>& BSP::get_gamelumps(void) const {
+        return m_gameLumps;
     }
 
     void BSP::build_worldlights(void) {

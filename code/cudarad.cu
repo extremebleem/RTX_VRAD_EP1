@@ -6,6 +6,10 @@
 #include <thread>
 #include <chrono>
 #include <cassert>
+#include <cmath>
+#include <fstream>
+#include <memory>
+#include <sstream>
 
 #include "cudarad.h"
 
@@ -15,6 +19,7 @@
 #include "cudabsp.h"
 #include "cudamatrix.h"
 #include "raytracer.h"
+#include "raytracer_optix.h"
 
 #include "cudautils.h"
 
@@ -80,6 +85,8 @@ static __device__ inline float3 decode_rgbexp32(BSP::RGBExp32 c) {
 namespace CUDARAD {
     static std::unique_ptr<RayTracer::CUDARayTracer> g_pRayTracer;
     static __device__ RayTracer::CUDARayTracer* g_pDeviceRayTracer;
+    static std::unique_ptr<OptixRT::OptixSunLosTracer> g_pOptixTracer;
+    static std::vector<OptixRT::Triangle> g_optixTriangles;
 
     __device__ FaceInfo::FaceInfo() {};
 
@@ -122,7 +129,7 @@ namespace CUDARAD {
 
 namespace LeafAmbient {
 
-    
+
 
     static __device__ const float3 BOX_DIRECTIONS[NUM_CUBE_SIDES] = {
         {  1.0f,  0.0f,  0.0f },
@@ -492,7 +499,7 @@ namespace LeafAmbient {
             int sampleIndex = base + map * stylePlaneSize + luxelIndex;
 
             float3 color = cudaBSP.lightSamples[sampleIndex];
-            
+
             color = compute_ambient_from_surface(cudaBSP, faceId, skyAmbient, color);
             colorSum = sr_add(colorSum, color);
         }
@@ -688,10 +695,7 @@ namespace LeafAmbient {
         size_t leafIndex = blockIdx.x * blockDim.x + threadIdx.x;
 
         if (leafIndex >= pCudaBSP->numLeaves)
-        {
-            printf("leafIndex %i numLeaves %i\n", leafIndex, pCudaBSP->numLeaves);
             return;
-        }
 
         BSP::CompressedLightCube out;
 
@@ -858,14 +862,18 @@ namespace DirectLighting {
             //}
 
             if (light.type == BSP::EMIT_SKYLIGHT) {
-                float3 n = safe_normalized(sampleNormal);
-                float3 sunDir = safe_normalized(make_float3(light.normal)) * -1.0f;
+                float3 n = sampleNormal;
+                float3 sunDir = make_float3(light.normal);
 
-                float ndotl = dot(n, sunDir);
+                float ndotl = dot(n, sunDir * -1.f);
                 if (ndotl <= 0.0f)
+                {
+                    //printf("normal %.3f %.3f %.3f sunDir %.3f %.3f %.3f dot %.2f\n", n.x, n.y, n.z, sunDir.x, sunDir.y, sunDir.z, ndotl);
                     continue;
+                }
 
-                float3 start = samplePos + n * 0.25f + sunDir * 0.001f;
+
+                float3 start = samplePos + n * 0.001f;
                 float3 end = start + sunDir * COORD_EXTENT;
 
                 if (!CUDARAD::g_pDeviceRayTracer->LOS_blocked_sun(start, end))
@@ -988,8 +996,8 @@ namespace DirectLighting {
         float s,
         float t
     ) {
-        // Не семплим ровно border luxel.
-        // 0.5f = центр luxel'а, сильно уменьшает leaks на seams.
+        // Do not sample exactly on the border luxel.
+        // 0.5f samples at the luxel center and greatly reduces seam leaks.
         float ss = sr_clampf(s + 0.5f, 0.5f, float(faceInfo.lightmapWidth) - 1.5f);
         float tt = sr_clampf(t + 0.5f, 0.5f, float(faceInfo.lightmapHeight) - 1.5f);
 
@@ -999,7 +1007,7 @@ namespace DirectLighting {
         if (faceInfo.face.side)
             n = make_float3(-n.x, -n.y, -n.z);
 
-        // Маленький push с поверхности, чтобы trace не стартовал ровно на plane/edge.
+        // Push slightly off the surface so the trace does not start exactly on a plane or edge.
         p.x += n.x * 0.25f;
         p.y += n.y * 0.25f;
         p.z += n.z * 0.25f;
@@ -1017,11 +1025,10 @@ namespace DirectLighting {
         float ss = fminf(fmaxf(s + 0.5f, 0.5f), float(faceInfo.lightmapWidth) - 1.5f);
         float tt = fminf(fmaxf(t + 0.5f, 0.5f), float(faceInfo.lightmapHeight) - 1.5f);
 
-        float3 n = faceInfo.faceNorm; // НЕ переворачивать по face.side
+        float3 n = faceInfo.faceNorm;
 
         float3 samplePos = faceInfo.xyz_from_st(ss, tt);
 
-        // маленький push наружу от своей поверхности
         samplePos.x += n.x * 0.03125f;
         samplePos.y += n.y * 0.03125f;
         samplePos.z += n.z * 0.03125f;
@@ -1102,8 +1109,6 @@ namespace DirectLighting {
                     faceInfo.avgLight;
             }
 
-            // Still have no idea how this works. But if we don't do this,
-            // EVERYTHING becomes a disaster...
             faceInfo.face.styles[0] = 0x00;
             faceInfo.face.styles[1] = 0xFF;
             faceInfo.face.styles[2] = 0xFF;
@@ -1844,32 +1849,93 @@ namespace BouncedLighting
 
 
 namespace CUDARAD {
-    void init(BSP::BSP& bsp) {
-        std::cout << "Setting up ray-trace acceleration structure... "
-            << std::flush;
+    static constexpr float HOST_COORD_EXTENT = 16384.0f;
+    static constexpr size_t HOST_SKY_AMBIENT_SAMPLES = 8;
+    static constexpr size_t HOST_GI_SAMPLES = 8;
+    static constexpr float HOST_INDIRECT_SCALE = 0.35f;
 
-        using Clock = std::chrono::high_resolution_clock;
+    enum HostSurfaceRole : uint32_t {
+        RTX_ROLE_RECEIVER = 1u << 0,
+        RTX_ROLE_OCCLUDER = 1u << 1,
+        RTX_ROLE_SKY = 1u << 2,
+        RTX_ROLE_TOOL = 1u << 3,
+        RTX_ROLE_TRANSLUCENT = 1u << 4,
+        RTX_ROLE_DISPLACEMENT = 1u << 5,
+        RTX_ROLE_STATIC_PROP = 1u << 6,
+    };
 
-        auto start = Clock::now();
+    static uint32_t host_surface_role_from_flags(int32_t flags, bool displacement)
+    {
+        uint32_t role = 0;
 
-        g_pRayTracer = std::unique_ptr<RayTracer::CUDARayTracer>(
-            new RayTracer::CUDARayTracer()
-        );
+        if (displacement) {
+            role |= RTX_ROLE_DISPLACEMENT;
+        }
 
-        std::vector<RayTracer::Triangle> triangles;
+        if (flags & BSP::SURF_SKY) {
+            return role | RTX_ROLE_SKY;
+        }
 
-        /* Put all of the BSP's face triangles into the ray-tracer. */
+        if (flags & (BSP::SURF_TRIGGER | BSP::SURF_SKIP | BSP::SURF_HINT)) {
+            return role | RTX_ROLE_TOOL;
+        }
+
+        if (flags & BSP::SURF_TRANS) {
+            return role | RTX_ROLE_TRANSLUCENT;
+        }
+
+        if (!(flags & BSP::SURF_NOLIGHT)) {
+            role |= RTX_ROLE_RECEIVER;
+        }
+
+        if (!(flags & BSP::SURF_NOSHADOWS)) {
+            role |= RTX_ROLE_OCCLUDER;
+        }
+
+        return role;
+    }
+
+    static std::vector<char> load_optix_ptx()
+    {
+        const char* candidates[] = {
+            "raytracer_optix.ptx",
+            "x64\\Debug\\raytracer_optix.ptx",
+            "x64\\Release\\raytracer_optix.ptx",
+            "code\\x64\\Debug\\raytracer_optix.ptx",
+            "code\\x64\\Release\\raytracer_optix.ptx",
+        };
+
+        for (const char* candidate : candidates) {
+            std::ifstream file(candidate, std::ios::binary);
+            if (!file) {
+                continue;
+            }
+
+            return std::vector<char>(
+                std::istreambuf_iterator<char>(file),
+                std::istreambuf_iterator<char>()
+            );
+        }
+
+        std::ostringstream error;
+        error << "Unable to find raytracer_optix.ptx. Tried:";
+        for (const char* candidate : candidates) {
+            error << " " << candidate;
+        }
+        throw std::runtime_error(error.str());
+    }
+
+    static void append_blocking_triangles(
+        BSP::BSP& bsp,
+        std::vector<OptixRT::Triangle>& triangles
+    ) {
         for (const BSP::Face& face : bsp.get_faces()) {
             int32_t flags = face.get_texinfo().flags;
+            const bool isDisplacement = face.get_data().dispInfo >= 0;
+            const uint32_t role =
+                host_surface_role_from_flags(flags, isDisplacement);
 
-            if (flags & BSP::SURF_SKY)
-                continue;
-
-            if (flags & BSP::SURF_TRIGGER)
-                continue;
-
-            if ((flags & BSP::SURF_TRANS) && !(flags & BSP::SURF_NODRAW)) {
-                // Skip translucent faces, but keep nodraw faces.
+            if (!(role & RTX_ROLE_OCCLUDER)) {
                 continue;
             }
 
@@ -1881,19 +1947,15 @@ namespace CUDARAD {
             std::vector<BSP::Vec3<float>> verts;
             verts.reserve(edges.size());
 
-            // First edge: assume vertex1 is the first polygon vertex.
             verts.push_back(edges[0].vertex1);
 
             BSP::Vec3<float> current = edges[0].vertex2;
-
             verts.push_back(current);
 
             for (size_t ei = 1; ei < edges.size(); ++ei) {
                 const BSP::Edge& edge = edges[ei];
-
                 BSP::Vec3<float> next;
 
-                // Continue the polygon chain.
                 if (vec_equal(edge.vertex1, current)) {
                     next = edge.vertex2;
                 }
@@ -1901,12 +1963,9 @@ namespace CUDARAD {
                     next = edge.vertex1;
                 }
                 else {
-                    // Fallback: if get_edges() already stores oriented edges,
-                    // use vertex1 like the old code did.
                     next = edge.vertex1;
                 }
 
-                // Avoid duplicating the closing vertex.
                 if (ei + 1 < edges.size()) {
                     verts.push_back(next);
                 }
@@ -1926,25 +1985,266 @@ namespace CUDARAD {
                 float3 e1 = b - a;
                 float3 e2 = c - a;
 
-                // Skip degenerate triangles.
                 if (len(cross(e1, e2)) <= 1e-4f)
                     continue;
 
-                RayTracer::Triangle tri{
-                    {
-                        a,
-                        b,
-                        c,
-                    },
-                    static_cast<int>(face.id),
-                    flags
-                };
-
+                OptixRT::Triangle tri{};
+                tri.v0 = a;
+                tri.v1 = b;
+                tri.v2 = c;
+                tri.sourceId = static_cast<uint32_t>(face.id);
+                tri.role = role;
+                tri.visibilityMask = 0xff;
                 triangles.push_back(tri);
             }
         }
+    }
 
-        g_pRayTracer->add_triangles(triangles);
+    static bool host_cluster_in_pvs(
+        const BSP::BSP& bsp,
+        int16_t sampleCluster,
+        int16_t lightCluster
+    ) {
+        const BSP::BSP::VisMatrix& vis = bsp.get_visibility();
+
+        if (sampleCluster < 0 || lightCluster < 0) {
+            return true;
+        }
+
+        if (static_cast<size_t>(sampleCluster) >= vis.size()) {
+            return true;
+        }
+
+        const std::vector<uint8_t>& pvs = vis[sampleCluster];
+        size_t byteIndex = static_cast<size_t>(lightCluster) / 8;
+        size_t bitIndex = static_cast<size_t>(lightCluster) % 8;
+
+        if (byteIndex >= pvs.size()) {
+            return true;
+        }
+
+        return ((pvs[byteIndex] >> bitIndex) & 0x1) != 0x0;
+    }
+
+    struct HostFaceInfo {
+        BSP::DFace face;
+        BSP::DPlane plane;
+        BSP::TexInfo texInfo;
+        CUDAMatrix::CUDAMatrix<double, 3, 3> Ainv;
+        float3 faceNorm;
+        size_t faceIndex;
+        size_t lightmapWidth;
+        size_t lightmapHeight;
+        size_t lightmapSize;
+        size_t lightmapStartIndex;
+
+        HostFaceInfo(BSP::BSP& bsp, size_t faceIndex)
+            : face(bsp.get_dfaces()[faceIndex]),
+              plane(bsp.get_planes()[face.planeNum]),
+              texInfo(bsp.get_texinfos()[face.texInfo]),
+              faceIndex(faceIndex),
+              lightmapWidth(face.lightmapTextureSizeInLuxels[0] + 1),
+              lightmapHeight(face.lightmapTextureSizeInLuxels[1] + 1),
+              lightmapSize(lightmapWidth * lightmapHeight),
+              lightmapStartIndex(face.lightOffset / sizeof(BSP::RGBExp32))
+        {
+            const gmtl::Matrix<double, 3, 3>& xyzMatrix =
+                bsp.get_faces()[faceIndex].get_st_xyz_matrix();
+
+            for (int row = 0; row < 3; ++row) {
+                for (int col = 0; col < 3; ++col) {
+                    Ainv[row][col] = xyzMatrix[row][col];
+                }
+            }
+
+            faceNorm = make_float3(plane.normal);
+        }
+
+        float3 xyz_from_st(float s, float t) const
+        {
+            float sOffset = texInfo.lightmapVecs[0][3];
+            float tOffset = texInfo.lightmapVecs[1][3];
+
+            float sMin = static_cast<float>(face.lightmapTextureMinsInLuxels[0]);
+            float tMin = static_cast<float>(face.lightmapTextureMinsInLuxels[1]);
+
+            CUDAMatrix::CUDAMatrix<double, 3, 1> B;
+
+            B[0][0] = s - sOffset + sMin;
+            B[1][0] = t - tOffset + tMin;
+            B[2][0] = plane.dist;
+
+            CUDAMatrix::CUDAMatrix<double, 3, 1> result = Ainv * B;
+
+            return make_float3(
+                static_cast<float>(result[0][0]),
+                static_cast<float>(result[1][0]),
+                static_cast<float>(result[2][0])
+            );
+        }
+    };
+
+    static bool host_is_finite(float v)
+    {
+        return std::isfinite(v);
+    }
+
+    static bool host_is_finite(float3 v)
+    {
+        return host_is_finite(v.x)
+            && host_is_finite(v.y)
+            && host_is_finite(v.z);
+    }
+
+    static bool host_is_valid_ray(const OptixRT::SunRay& ray)
+    {
+        return host_is_finite(ray.origin)
+            && host_is_finite(ray.direction)
+            && host_is_finite(ray.tmin)
+            && host_is_finite(ray.tmax)
+            && ray.tmax > ray.tmin
+            && len(ray.direction) > 1e-6f;
+    }
+
+    static float3 host_normalized(float3 v)
+    {
+        float length = len(v);
+        if (!std::isfinite(length) || length <= 1e-6f) {
+            return make_float3();
+        }
+
+        return v / length;
+    }
+
+    static float3 host_find_sky_ambient(const BSP::BSP& bsp)
+    {
+        for (const BSP::DWorldLight& light : bsp.get_worldlights()) {
+            if (light.type == BSP::EMIT_SKYAMBIENT && light.style == 0) {
+                return make_float3(light.intensity) * 255.0f;
+            }
+        }
+
+        return make_float3(24.0f, 24.0f, 24.0f);
+    }
+
+    static bool host_face_receives_light(const HostFaceInfo& faceInfo)
+    {
+        uint32_t role = host_surface_role_from_flags(
+            faceInfo.texInfo.flags,
+            faceInfo.face.dispInfo >= 0
+        );
+        return (role & RTX_ROLE_RECEIVER) != 0;
+    }
+
+    static float3 host_make_tangent(float3 n)
+    {
+        float3 up = fabsf(n.z) < 0.999f
+            ? make_float3(0.0f, 0.0f, 1.0f)
+            : make_float3(1.0f, 0.0f, 0.0f);
+
+        return host_normalized(cross(up, n));
+    }
+
+    static float3 host_make_bitangent(float3 n, float3 tangent)
+    {
+        return host_normalized(cross(n, tangent));
+    }
+
+    static float3 host_ambient_direction(float3 n, size_t sampleIndex)
+    {
+        static const float2 kDisk[HOST_SKY_AMBIENT_SAMPLES] = {
+            { 0.0000f, 0.0000f },
+            { 0.5333f, 0.0000f },
+            { -0.5333f, 0.0000f },
+            { 0.0000f, 0.5333f },
+            { 0.0000f, -0.5333f },
+            { 0.3770f, 0.3770f },
+            { -0.3770f, 0.3770f },
+            { 0.3770f, -0.3770f },
+        };
+
+        float3 tangent = host_make_tangent(n);
+        float3 bitangent = host_make_bitangent(n, tangent);
+
+        float x = kDisk[sampleIndex].x;
+        float y = kDisk[sampleIndex].y;
+        float z = sqrtf(std::max(0.0f, 1.0f - x * x - y * y));
+
+        return host_normalized(tangent * x + bitangent * y + n * z);
+    }
+
+    static float3 host_surface_reflectivity(
+        const BSP::BSP& bsp,
+        const HostFaceInfo& faceInfo
+    ) {
+        if (faceInfo.texInfo.texData < 0
+            || static_cast<size_t>(faceInfo.texInfo.texData) >= bsp.get_texdatas().size()) {
+            return make_float3(0.5f, 0.5f, 0.5f);
+        }
+
+        const BSP::DTexData& texData = bsp.get_texdatas()[faceInfo.texInfo.texData];
+        return make_float3(texData.reflectivity);
+    }
+
+    static float3 host_gi_direction(float3 n, size_t sampleIndex)
+    {
+        return host_ambient_direction(n, sampleIndex % HOST_SKY_AMBIENT_SAMPLES);
+    }
+
+    static bool host_leaf_receives_ambient(const BSP::DLeaf& leaf)
+    {
+        return (leaf.contents & BSP::CONTENTS_SOLID) == 0;
+    }
+
+    static BSP::RGBExp32 host_rgbexp32_from_float3(float3 color)
+    {
+        color.x = std::max(color.x, 0.0f);
+        color.y = std::max(color.y, 0.0f);
+        color.z = std::max(color.z, 0.0f);
+
+        float maxColor = std::max(color.x, std::max(color.y, color.z));
+        int exponent = 0;
+
+        if (maxColor > 0.0f) {
+            float normalized = maxColor;
+
+            while (normalized > 255.0f && exponent < 127) {
+                ++exponent;
+                normalized *= 0.5f;
+            }
+
+            while (normalized < 127.0f && exponent > -128) {
+                --exponent;
+                normalized *= 2.0f;
+            }
+        }
+
+        float scalar = std::ldexp(1.0f, -exponent);
+
+        return BSP::RGBExp32{
+            static_cast<uint8_t>(std::min(color.x * scalar, 255.0f)),
+            static_cast<uint8_t>(std::min(color.y * scalar, 255.0f)),
+            static_cast<uint8_t>(std::min(color.z * scalar, 255.0f)),
+            static_cast<int8_t>(exponent)
+        };
+    }
+
+    void init(BSP::BSP& bsp) {
+        std::cout << "Setting up OptiX ray-trace acceleration structure... "
+            << std::flush;
+
+        using Clock = std::chrono::high_resolution_clock;
+
+        auto start = Clock::now();
+
+        g_optixTriangles.clear();
+        append_blocking_triangles(bsp, g_optixTriangles);
+
+        std::vector<char> ptx = load_optix_ptx();
+
+        g_pOptixTracer.reset(new OptixRT::OptixSunLosTracer());
+        g_pOptixTracer->init(ptx.data(), ptx.size());
+        g_pOptixTracer->build_world_gas(g_optixTriangles);
 
         bsp.init_ambient_samples();
 
@@ -1954,125 +2254,561 @@ namespace CUDARAD {
                 end - start
             );
 
-        std::cout << "Done! (" << ms.count() << " ms)" << std::endl;
-
-        std::cout << "Moving ray-tracer to device..." << std::endl;
-
-        RayTracer::CUDARayTracer* pDeviceRayTracer;
-
-        CUDA_CHECK_ERROR(
-            cudaMalloc(&pDeviceRayTracer, sizeof(RayTracer::CUDARayTracer))
-        );
-        CUDA_CHECK_ERROR(
-            cudaMemcpy(
-                pDeviceRayTracer, g_pRayTracer.get(),
-                sizeof(RayTracer::CUDARayTracer),
-                cudaMemcpyHostToDevice
-            )
-        );
-        CUDA_CHECK_ERROR(
-            cudaMemcpyToSymbol(
-                g_pDeviceRayTracer, &pDeviceRayTracer,
-                sizeof(RayTracer::CUDARayTracer*), 0,
-                cudaMemcpyHostToDevice
-            )
-        );
+        std::cout << "Done! (" << ms.count() << " ms, "
+            << g_optixTriangles.size() << " RTX triangles, "
+            << bsp.get_brushes().size() << " brushes, "
+            << bsp.get_dispinfos().size() << " displacements, "
+            << bsp.get_static_props().props.size() << " static props)"
+            << std::endl;
     }
 
     void cleanup(void) {
-        RayTracer::CUDARayTracer* pDeviceRayTracer;
-
-        CUDA_CHECK_ERROR(
-            cudaMemcpyFromSymbol(
-                &pDeviceRayTracer, g_pDeviceRayTracer,
-                sizeof(RayTracer::CUDARayTracer*), 0,
-                cudaMemcpyDeviceToHost
-            )
-        );
-
-        CUDA_CHECK_ERROR(cudaFree(pDeviceRayTracer));
-
+        g_pOptixTracer = nullptr;
         g_pRayTracer = nullptr;
+        g_optixTriangles.clear();
     }
 
     void compute_direct_lighting(BSP::BSP& bsp, CUDABSP::CUDABSP* pCudaBSP) {
-        volatile size_t* pFacesCompleted;
-        CUDA_CHECK_ERROR(
-            cudaHostAlloc(
-                &pFacesCompleted, sizeof(size_t),
-                cudaHostAllocMapped
-            )
+        if (!g_pOptixTracer) {
+            throw std::runtime_error("CUDARAD::init must create the OptiX tracer before direct lighting");
+        }
+
+        using Clock = std::chrono::high_resolution_clock;
+
+        struct RayContribution {
+            size_t lightmapIndex;
+            float3 color;
+        };
+
+        struct GiRayContribution {
+            size_t lightmapIndex;
+            float3 reflectivity;
+            float weight;
+        };
+
+        auto clampf_host = [](float v, float lo, float hi) {
+            return std::max(lo, std::min(v, hi));
+        };
+
+        auto attenuate_host = [](const BSP::DWorldLight& light, float dist) {
+            return light.constantAtten
+                + light.linearAtten * dist
+                + light.quadraticAtten * dist * dist;
+        };
+
+        std::vector<float3> lightSamples(
+            bsp.get_lightsamples().size(),
+            make_float3()
         );
-
-        *pFacesCompleted = 0;
-
-        volatile size_t* pDeviceFacesCompleted;
-        CUDA_CHECK_ERROR(
-            cudaHostGetDevicePointer(
-                const_cast<size_t**>(&pDeviceFacesCompleted),
-                const_cast<size_t*>(pFacesCompleted),
-                0
-            )
-        );
-
-        const size_t BLOCK_WIDTH = 16;
-        const size_t BLOCK_HEIGHT = 16;
+        std::vector<BSP::DFace> dFaces = bsp.get_dfaces();
+        std::vector<OptixRT::SunRay> rays;
+        std::vector<RayContribution> contributions;
+        float3 skyAmbient = host_find_sky_ambient(bsp);
 
         size_t numFaces = bsp.get_faces().size();
+        size_t processedFaces = 0;
 
-        dim3 blockDim(BLOCK_WIDTH, BLOCK_HEIGHT);
+        std::cout << "Building OptiX direct-lighting ray batch for "
+            << numFaces << " faces..." << std::endl;
 
-        std::cout << "Launching "
-            << numFaces * BLOCK_WIDTH * BLOCK_HEIGHT << " threads ("
-            << numFaces << " faces)..."
-            << std::endl;
+        auto startTime = Clock::now();
 
-        cudaEvent_t startEvent;
-        cudaEvent_t stopEvent;
+        for (size_t faceIndex = 0; faceIndex < numFaces; ++faceIndex) {
+            HostFaceInfo faceInfo(bsp, faceIndex);
 
-        CUDA_CHECK_ERROR(cudaEventCreate(&startEvent));
-        CUDA_CHECK_ERROR(cudaEventCreate(&stopEvent));
-
-        CUDA_CHECK_ERROR(cudaEventRecord(startEvent));
-
-        KERNEL_LAUNCH(
-            DirectLighting::map_faces,
-            numFaces, blockDim,
-            pCudaBSP, const_cast<size_t*>(pDeviceFacesCompleted)
-        );
-
-        flush_wddm_queue();
-
-        size_t lastFacesCompleted = 0;
-        size_t facesCompleted;
-
-        /* Progress notification logic */
-        do {
-            CUDA_CHECK_ERROR(cudaPeekAtLastError());
-
-            facesCompleted = *pFacesCompleted;
-
-            if (facesCompleted > lastFacesCompleted) {
-                std::cout << "    " << facesCompleted << "/"
-                    << numFaces
-                    << " faces processed..." << std::endl;
+            if (faceInfo.face.lightOffset < 0 || !host_face_receives_light(faceInfo)) {
+                ++processedFaces;
+                continue;
             }
 
-            lastFacesCompleted = facesCompleted;
+            for (size_t t = 0; t < faceInfo.lightmapHeight; ++t) {
+                for (size_t s = 0; s < faceInfo.lightmapWidth; ++s) {
+                    float ss = clampf_host(
+                        static_cast<float>(s) + 0.5f,
+                        0.5f,
+                        static_cast<float>(faceInfo.lightmapWidth) - 1.5f
+                    );
+                    float tt = clampf_host(
+                        static_cast<float>(t) + 0.5f,
+                        0.5f,
+                        static_cast<float>(faceInfo.lightmapHeight) - 1.5f
+                    );
 
-            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+                    float3 n = faceInfo.faceNorm;
+                    float3 samplePos = faceInfo.xyz_from_st(ss, tt);
+                    samplePos.x += n.x * 0.03125f;
+                    samplePos.y += n.y * 0.03125f;
+                    samplePos.z += n.z * 0.03125f;
 
-        } while (facesCompleted < numFaces);
+                    if (!host_is_finite(n) || !host_is_finite(samplePos)) {
+                        continue;
+                    }
 
-        CUDA_CHECK_ERROR(cudaEventRecord(stopEvent));
+                    float3 sampleNormal = host_normalized(n);
+                    if (!host_is_finite(sampleNormal) || len(sampleNormal) <= 1e-6f) {
+                        continue;
+                    }
+
+                    BSP::Vec3<float> sampleVec{
+                        samplePos.x,
+                        samplePos.y,
+                        samplePos.z,
+                    };
+                    int16_t sampleCluster = bsp.cluster_for_pos(sampleVec);
+
+                    size_t sampleIndex = t * faceInfo.lightmapWidth + s;
+                    size_t lightmapIndex =
+                        faceInfo.lightmapStartIndex + sampleIndex;
+
+                    for (size_t ai = 0; ai < HOST_SKY_AMBIENT_SAMPLES; ++ai) {
+                        float3 ambientDir = host_ambient_direction(sampleNormal, ai);
+                        float ndotl = dot(sampleNormal, ambientDir);
+
+                        if (ndotl <= 0.0f) {
+                            continue;
+                        }
+
+                            OptixRT::SunRay ray = {};
+                            ray.origin = samplePos + sampleNormal * 0.25f
+                                + ambientDir * 0.001f;
+                            ray.direction = ambientDir;
+                            ray.tmin = 0.001f;
+                            ray.tmax = HOST_COORD_EXTENT;
+                            ray.visibilityMask = 0xff;
+
+                        if (!host_is_valid_ray(ray)) {
+                            continue;
+                        }
+
+                        rays.push_back(ray);
+                        contributions.push_back(RayContribution{
+                            lightmapIndex,
+                            skyAmbient * (ndotl / static_cast<float>(HOST_SKY_AMBIENT_SAMPLES)),
+                        });
+                    }
+
+                    for (const BSP::DWorldLight& light : bsp.get_worldlights()) {
+                        if (light.type == BSP::EMIT_SKYAMBIENT) {
+                            continue;
+                        }
+
+                        if (light.type == BSP::EMIT_SKYLIGHT) {
+                            float3 lightNormal = make_float3(light.normal);
+                            float3 sunDir = host_normalized(lightNormal) * -1.0f;
+                            float3 sunNormal = sampleNormal;
+
+                            if (!host_is_finite(sunDir) || !host_is_finite(sunNormal)) {
+                                continue;
+                            }
+
+                            float ndotl = dot(sunNormal, sunDir);
+
+                            if (ndotl <= 0.0f) {
+                                continue;
+                            }
+
+                            float3 origin =
+                                samplePos + sunNormal * 0.25f + sunDir * 0.001f;
+
+                            OptixRT::SunRay ray = {};
+                            ray.origin = origin;
+                            ray.direction = sunDir;
+                            ray.tmin = 0.001f;
+                            ray.tmax = HOST_COORD_EXTENT;
+                            ray.visibilityMask = 0xff;
+
+                            if (!host_is_valid_ray(ray)) {
+                                continue;
+                            }
+
+                            rays.push_back(ray);
+                            contributions.push_back(RayContribution{
+                                lightmapIndex,
+                                make_float3(light.intensity) * ndotl * 255.0f,
+                            });
+
+                            continue;
+                        }
+
+                        if (!host_cluster_in_pvs(
+                            bsp,
+                            sampleCluster,
+                            static_cast<int16_t>(light.cluster)
+                        )) {
+                            continue;
+                        }
+
+                        float3 lightPos = make_float3(light.origin);
+                        if (!host_is_finite(lightPos)) {
+                            continue;
+                        }
+
+                        float3 diff = samplePos - lightPos;
+
+                        if (len(n) > 0.0f && dot(diff, n) >= 0.0f) {
+                            continue;
+                        }
+
+                        float distToLight = len(diff);
+                        if (distToLight <= 1e-6f) {
+                            continue;
+                        }
+
+                        float3 dir = diff / distToLight;
+                        float penumbraScale = 1.0f;
+
+                        if (!host_is_finite(dir)) {
+                            continue;
+                        }
+
+                        if (light.type == BSP::EMIT_SPOTLIGHT) {
+                            float3 lightNorm = make_float3(light.normal);
+                            if (!host_is_finite(lightNorm)) {
+                                continue;
+                            }
+
+                            float lightDot = dot(dir, lightNorm);
+
+                            if (lightDot < light.stopdot2) {
+                                continue;
+                            }
+                            else if (lightDot < light.stopdot) {
+                                penumbraScale =
+                                    (lightDot - light.stopdot2)
+                                    / (light.stopdot - light.stopdot2);
+                            }
+                        }
+
+                        const float SHADOW_EPSILON = 0.05f;
+                        float3 shadowStart = samplePos + n * SHADOW_EPSILON;
+                        float3 shadowDelta = lightPos - shadowStart;
+                        float shadowDist = len(shadowDelta);
+
+                        if (shadowDist <= 1e-6f) {
+                            continue;
+                        }
+
+                        float attenuation = attenuate_host(light, distToLight);
+
+                        if (!std::isfinite(attenuation) || attenuation <= 1e-6f) {
+                            continue;
+                        }
+
+                        float3 lightContribution = make_float3(light.intensity);
+                        lightContribution *= penumbraScale * 255.0f / attenuation;
+
+                        OptixRT::SunRay ray = {};
+                        ray.origin = shadowStart;
+                        ray.direction = shadowDelta / shadowDist;
+                        ray.tmin = 0.001f;
+                        ray.tmax = shadowDist - 0.001f;
+                        ray.visibilityMask = 0xff;
+
+                        if (!host_is_valid_ray(ray)) {
+                            continue;
+                        }
+
+                        rays.push_back(ray);
+                        contributions.push_back(RayContribution{
+                            lightmapIndex,
+                            lightContribution,
+                        });
+                    }
+                }
+            }
+
+            ++processedFaces;
+            if (processedFaces % 32 == 0 || processedFaces == numFaces) {
+                std::cout << "    " << processedFaces << "/"
+                    << numFaces << " faces batched..." << std::endl;
+            }
+        }
+
+        std::cout << "Tracing " << rays.size()
+            << " direct-lighting rays with OptiX..." << std::endl;
+
+        std::vector<OptixRT::RayHit> directHits;
+        g_pOptixTracer->trace_batch(rays, directHits);
+
+        for (size_t i = 0; i < contributions.size(); ++i) {
+            if (!directHits[i].hit) {
+                lightSamples[contributions[i].lightmapIndex] +=
+                    contributions[i].color;
+            }
+        }
+
+        std::vector<float3> faceAverages(numFaces, make_float3());
+
+        for (size_t faceIndex = 0; faceIndex < numFaces; ++faceIndex) {
+            HostFaceInfo faceInfo(bsp, faceIndex);
+
+            if (faceInfo.face.lightOffset < 0 || !host_face_receives_light(faceInfo)) {
+                continue;
+            }
+
+            float3 totalLight = make_float3();
+
+            for (size_t sampleIndex = 0; sampleIndex < faceInfo.lightmapSize; ++sampleIndex) {
+                totalLight += lightSamples[faceInfo.lightmapStartIndex + sampleIndex];
+            }
+
+            faceAverages[faceIndex] =
+                totalLight / static_cast<float>(faceInfo.lightmapSize);
+        }
+
+        std::vector<OptixRT::SunRay> giRays;
+        std::vector<GiRayContribution> giContributions;
+
+        std::cout << "Building OptiX indirect-lighting ray batch..."
+            << std::endl;
+
+        for (size_t faceIndex = 0; faceIndex < numFaces; ++faceIndex) {
+            HostFaceInfo faceInfo(bsp, faceIndex);
+
+            if (faceInfo.face.lightOffset < 0 || !host_face_receives_light(faceInfo)) {
+                continue;
+            }
+
+            const float3 sampleNormal = host_normalized(faceInfo.faceNorm);
+            const float3 reflectivity = host_surface_reflectivity(bsp, faceInfo);
+
+            for (size_t t = 0; t < faceInfo.lightmapHeight; ++t) {
+                for (size_t s = 0; s < faceInfo.lightmapWidth; ++s) {
+                    float ss = clampf_host(
+                        static_cast<float>(s) + 0.5f,
+                        0.5f,
+                        static_cast<float>(faceInfo.lightmapWidth) - 1.5f
+                    );
+                    float tt = clampf_host(
+                        static_cast<float>(t) + 0.5f,
+                        0.5f,
+                        static_cast<float>(faceInfo.lightmapHeight) - 1.5f
+                    );
+
+                    float3 samplePos = faceInfo.xyz_from_st(ss, tt)
+                        + sampleNormal * 0.25f;
+
+                    if (!host_is_finite(samplePos) || !host_is_finite(sampleNormal)) {
+                        continue;
+                    }
+
+                    size_t sampleIndex = t * faceInfo.lightmapWidth + s;
+                    size_t lightmapIndex =
+                        faceInfo.lightmapStartIndex + sampleIndex;
+
+                    for (size_t gi = 0; gi < HOST_GI_SAMPLES; ++gi) {
+                        float3 giDir = host_gi_direction(sampleNormal, gi);
+                        float ndotl = dot(sampleNormal, giDir);
+
+                        if (ndotl <= 0.0f) {
+                            continue;
+                        }
+
+                        OptixRT::SunRay ray = {};
+                        ray.origin = samplePos + giDir * 0.01f;
+                        ray.direction = giDir;
+                        ray.tmin = 0.01f;
+                        ray.tmax = HOST_COORD_EXTENT;
+                        ray.visibilityMask = 0xff;
+
+                        if (!host_is_valid_ray(ray)) {
+                            continue;
+                        }
+
+                        giRays.push_back(ray);
+                        giContributions.push_back(GiRayContribution{
+                            lightmapIndex,
+                            reflectivity,
+                            ndotl / static_cast<float>(HOST_GI_SAMPLES),
+                        });
+                    }
+                }
+            }
+        }
+
+        std::cout << "Tracing " << giRays.size()
+            << " indirect-lighting rays with OptiX..." << std::endl;
+
+        std::vector<OptixRT::RayHit> giHits;
+        g_pOptixTracer->trace_batch(giRays, giHits);
+
+        for (size_t i = 0; i < giHits.size(); ++i) {
+            const OptixRT::RayHit& hit = giHits[i];
+
+            if (!hit.hit || hit.primitiveIndex >= g_optixTriangles.size()) {
+                continue;
+            }
+
+            uint32_t sourceFace = g_optixTriangles[hit.primitiveIndex].sourceId;
+
+            if (sourceFace >= faceAverages.size()) {
+                continue;
+            }
+
+            const GiRayContribution& c = giContributions[i];
+            float3 bounced = make_float3(
+                faceAverages[sourceFace].x * c.reflectivity.x,
+                faceAverages[sourceFace].y * c.reflectivity.y,
+                faceAverages[sourceFace].z * c.reflectivity.z
+            );
+
+            lightSamples[c.lightmapIndex] +=
+                bounced * (c.weight * HOST_INDIRECT_SCALE);
+        }
+
+        for (size_t faceIndex = 0; faceIndex < numFaces; ++faceIndex) {
+            HostFaceInfo faceInfo(bsp, faceIndex);
+
+            if (faceInfo.face.lightOffset < 0 || !host_face_receives_light(faceInfo)) {
+                continue;
+            }
+
+            float3 totalLight = make_float3();
+
+            for (size_t t = 0; t < faceInfo.lightmapHeight; ++t) {
+                for (size_t s = 0; s < faceInfo.lightmapWidth; ++s) {
+                    size_t sampleIndex = t * faceInfo.lightmapWidth + s;
+                    totalLight += lightSamples[
+                        faceInfo.lightmapStartIndex + sampleIndex
+                    ];
+                }
+            }
+
+            float3 avgLight =
+                totalLight / static_cast<float>(faceInfo.lightmapSize);
+            faceAverages[faceIndex] = avgLight;
+
+            if (faceInfo.lightmapStartIndex > 0) {
+                lightSamples[faceInfo.lightmapStartIndex - 1] = avgLight;
+            }
+
+            dFaces[faceIndex].styles[0] = 0x00;
+            dFaces[faceIndex].styles[1] = 0xFF;
+            dFaces[faceIndex].styles[2] = 0xFF;
+            dFaces[faceIndex].styles[3] = 0xFF;
+        }
+
+        std::vector<BSP::CompressedLightCube> leafAmbient(
+            bsp.get_leaves().size()
+        );
+
+        std::vector<OptixRT::SunRay> leafRays;
+        struct LeafRayContribution {
+            size_t leafIndex;
+            size_t side;
+        };
+        std::vector<LeafRayContribution> leafContributions;
+
+        static const float3 kCubeDirs[6] = {
+            { 1.0f, 0.0f, 0.0f },
+            { -1.0f, 0.0f, 0.0f },
+            { 0.0f, 1.0f, 0.0f },
+            { 0.0f, -1.0f, 0.0f },
+            { 0.0f, 0.0f, 1.0f },
+            { 0.0f, 0.0f, -1.0f },
+        };
+
+        for (size_t leafIndex = 0; leafIndex < bsp.get_leaves().size(); ++leafIndex) {
+            const BSP::DLeaf& leaf = bsp.get_leaves()[leafIndex];
+
+            for (size_t side = 0; side < 6; ++side) {
+                leafAmbient[leafIndex].color[side] =
+                    host_rgbexp32_from_float3(make_float3());
+            }
+
+            if (!host_leaf_receives_ambient(leaf)) {
+                continue;
+            }
+
+            float3 center = make_float3(
+                (static_cast<float>(leaf.mins[0]) + static_cast<float>(leaf.maxs[0])) * 0.5f,
+                (static_cast<float>(leaf.mins[1]) + static_cast<float>(leaf.maxs[1])) * 0.5f,
+                (static_cast<float>(leaf.mins[2]) + static_cast<float>(leaf.maxs[2])) * 0.5f
+            );
+
+            for (size_t side = 0; side < 6; ++side) {
+                OptixRT::SunRay ray = {};
+                ray.origin = center;
+                ray.direction = kCubeDirs[side];
+                ray.tmin = 0.01f;
+                ray.tmax = HOST_COORD_EXTENT;
+                ray.visibilityMask = 0xff;
+
+                if (!host_is_valid_ray(ray)) {
+                    continue;
+                }
+
+                leafRays.push_back(ray);
+                leafContributions.push_back(LeafRayContribution{ leafIndex, side });
+            }
+        }
+
+        std::cout << "Tracing " << leafRays.size()
+            << " leaf ambient rays with OptiX..." << std::endl;
+
+        std::vector<OptixRT::RayHit> leafHits;
+        g_pOptixTracer->trace_batch(leafRays, leafHits);
+
+        for (size_t i = 0; i < leafHits.size(); ++i) {
+            const LeafRayContribution& c = leafContributions[i];
+            const OptixRT::RayHit& hit = leafHits[i];
+
+            float3 color = skyAmbient;
+
+            if (hit.hit && hit.primitiveIndex < g_optixTriangles.size()) {
+                uint32_t sourceFace = g_optixTriangles[hit.primitiveIndex].sourceId;
+                if (sourceFace < faceAverages.size()) {
+                    color = faceAverages[sourceFace] * 0.5f;
+                }
+            }
+
+            leafAmbient[c.leafIndex].color[c.side] =
+                host_rgbexp32_from_float3(color);
+        }
+
+        CUDABSP::CUDABSP cudaBSP;
+        CUDA_CHECK_ERROR(cudaMemcpy(
+            &cudaBSP,
+            pCudaBSP,
+            sizeof(CUDABSP::CUDABSP),
+            cudaMemcpyDeviceToHost
+        ));
+
+        if (!lightSamples.empty()) {
+            CUDA_CHECK_ERROR(cudaMemcpy(
+                cudaBSP.lightSamples,
+                lightSamples.data(),
+                sizeof(float3) * lightSamples.size(),
+                cudaMemcpyHostToDevice
+            ));
+        }
+
+        if (!dFaces.empty()) {
+            CUDA_CHECK_ERROR(cudaMemcpy(
+                cudaBSP.faces,
+                dFaces.data(),
+                sizeof(BSP::DFace) * dFaces.size(),
+                cudaMemcpyHostToDevice
+            ));
+        }
+
+        if (!leafAmbient.empty()) {
+            CUDA_CHECK_ERROR(cudaMemcpy(
+                cudaBSP.ambientLightSamples,
+                leafAmbient.data(),
+                sizeof(BSP::CompressedLightCube) * leafAmbient.size(),
+                cudaMemcpyHostToDevice
+            ));
+        }
+
         CUDA_CHECK_ERROR(cudaDeviceSynchronize());
 
-        float time;
-        CUDA_CHECK_ERROR(cudaEventElapsedTime(&time, startEvent, stopEvent));
+        auto endTime = Clock::now();
+        auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+            endTime - startTime
+        );
 
-        std::cout << "Done! (" << time << " ms)" << std::endl;
-
-        cudaFreeHost(const_cast<size_t*>(pFacesCompleted));
+        std::cout << "Done! (" << ms.count() << " ms)" << std::endl;
     }
 
     void antialias_direct_lighting(BSP::BSP& bsp, CUDABSP::CUDABSP* pCudaBSP) {

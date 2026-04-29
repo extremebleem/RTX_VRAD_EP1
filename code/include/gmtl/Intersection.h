@@ -720,7 +720,7 @@ namespace gmtl
    {
       const DATA_TYPE eps(0.00001f);
 
-      // t = -(n·P + d)
+      // t = -(n dot P + d)
       Vec<DATA_TYPE, 3> N( plane.getNormal() );
       DATA_TYPE denom( dot(N,ray.getDir()) );
       if(gmtl::Math::abs(denom) < eps)    // Ray parallel to plane

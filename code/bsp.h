@@ -294,6 +294,61 @@ namespace BSP {
         int16_t leafWaterDataID;
     };
 
+    struct DBrush {
+        int32_t firstSide;
+        int32_t numSides;
+        int32_t contents;
+    };
+
+    struct DBrushSide {
+        uint16_t planeNum;
+        int16_t texInfo;
+        int16_t dispInfo;
+        int16_t bevel;
+    };
+
+    struct DispSubNeighbor {
+        uint16_t neighbor;
+        uint8_t neighborOrientation;
+        uint8_t span;
+        uint8_t neighborSpan;
+    };
+
+    struct DispNeighbor {
+        DispSubNeighbor subNeighbors[2];
+    };
+
+    struct DispCornerNeighbors {
+        uint16_t neighbors[4];
+        uint8_t numNeighbors;
+    };
+
+    struct DispInfo {
+        Vec3<float> startPosition;
+        int32_t dispVertStart;
+        int32_t dispTriStart;
+        int32_t power;
+        int32_t minTess;
+        float smoothingAngle;
+        int32_t contents;
+        uint16_t mapFace;
+        int32_t lightmapAlphaStart;
+        int32_t lightmapSamplePositionStart;
+        DispNeighbor edgeNeighbors[4];
+        DispCornerNeighbors cornerNeighbors[4];
+        uint32_t allowedVerts[10];
+    };
+
+    struct DispVert {
+        Vec3<float> vector;
+        float dist;
+        float alpha;
+    };
+
+    struct DispTri {
+        uint16_t tags;
+    };
+
     enum EmitType {
         EMIT_SURFACE,
         EMIT_POINT,
@@ -353,6 +408,44 @@ namespace BSP {
 
     struct GameLumpHeader {
         int32_t lumpCount;
+    };
+
+    enum StaticPropFlags {
+        STATIC_PROP_FLAG_FADES = 0x1,
+        STATIC_PROP_USE_LIGHTING_ORIGIN = 0x2,
+        STATIC_PROP_NO_SHADOW = 0x10,
+        STATIC_PROP_SCREEN_SPACE_FADE = 0x20,
+        STATIC_PROP_NO_PER_VERTEX_LIGHTING = 0x40,
+        STATIC_PROP_NO_SELF_SHADOWING = 0x80,
+    };
+
+    struct StaticPropDictLump {
+        char name[128];
+    };
+
+    struct StaticPropLeafLump {
+        uint16_t leaf;
+    };
+
+    struct StaticPropLumpV5 {
+        Vec3<float> origin;
+        Vec3<float> angles;
+        uint16_t propType;
+        uint16_t firstLeaf;
+        uint16_t leafCount;
+        uint8_t solid;
+        uint8_t flags;
+        int32_t skin;
+        float fadeMinDist;
+        float fadeMaxDist;
+        Vec3<float> lightingOrigin;
+        float forcedFadeScale;
+    };
+
+    struct StaticPropData {
+        std::vector<StaticPropDictLump> dict;
+        std::vector<StaticPropLeafLump> leaves;
+        std::vector<StaticPropLumpV5> props;
     };
 
     struct Edge {
@@ -538,8 +631,16 @@ namespace BSP {
             std::vector<Face> m_faces;
             std::vector<DNode> m_nodes;
             std::vector<DLeaf> m_leaves;
+            std::vector<uint16_t> m_leafBrushes;
+            std::vector<DBrush> m_brushes;
+            std::vector<DBrushSide> m_brushSides;
+            std::vector<DispInfo> m_dispInfos;
+            std::vector<DispVert> m_dispVerts;
+            std::vector<DispTri> m_dispTris;
+            std::vector<uint8_t> m_dispLightmapSamplePositions;
             std::vector<CompressedLightCube> m_ambientLightSamples;
             std::vector<DWorldLight> m_worldLights;
+            StaticPropData m_staticProps;
 
             std::string m_entData;
             std::vector<Light> m_lights;
@@ -577,6 +678,7 @@ namespace BSP {
             void load_extras(std::ifstream& file);
 
             void load_gamelumps(std::ifstream& file);
+            void load_static_props_gamelump(const std::vector<uint8_t>& data);
 
             template<typename Container>
             void load_single_gamelump(
@@ -648,6 +750,14 @@ namespace BSP {
 
             const std::vector<DNode>& get_nodes(void) const;
             const std::vector<DLeaf>& get_leaves(void) const;
+            const std::vector<uint16_t>& get_leafbrushes(void) const;
+            const std::vector<DBrush>& get_brushes(void) const;
+            const std::vector<DBrushSide>& get_brushsides(void) const;
+            const std::vector<DispInfo>& get_dispinfos(void) const;
+            const std::vector<DispVert>& get_dispverts(void) const;
+            const std::vector<DispTri>& get_disptris(void) const;
+            const std::vector<uint8_t>& get_disp_lightmap_sample_positions(void) const;
+            const StaticPropData& get_static_props(void) const;
 
             std::vector<CompressedLightCube>& get_ambient_samples(void);
             const std::vector<CompressedLightCube>& get_ambient_samples(void) const;
@@ -662,6 +772,9 @@ namespace BSP {
 
             const std::unordered_map<int, std::vector<uint8_t>>&
                 get_extras(void) const;
+            const std::unordered_map<int32_t, std::vector<uint8_t>>&
+                get_extra_gamelumps(void) const;
+            const std::map<int32_t, GameLump>& get_gamelumps(void) const;
 
             void build_worldlights(void);
             void init_ambient_samples(void);

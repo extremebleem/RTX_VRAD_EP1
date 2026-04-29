@@ -7,6 +7,7 @@
 #include "bsp.h"
 
 namespace RayTracer {
+
     struct Triangle {
         float3 vertices[3];
         int faceId;

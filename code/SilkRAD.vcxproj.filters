@@ -1,8 +1,11 @@
-﻿<?xml version="1.0" encoding="utf-8"?>
+<?xml version="1.0" encoding="utf-8"?>
 <Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup>
     <Filter Include="headers">
       <UniqueIdentifier>{a167f251-6846-4b26-9595-d60e089841d3}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="optix tracer">
+      <UniqueIdentifier>{5554ad9c-0a69-4ad9-89a8-e32b461f2bee}</UniqueIdentifier>
     </Filter>
   </ItemGroup>
   <ItemGroup>
@@ -30,10 +33,16 @@
     <ClInclude Include="bsp_shared.h">
       <Filter>headers</Filter>
     </ClInclude>
+    <ClInclude Include="raytracer_optix.h">
+      <Filter>optix tracer</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="bsp.cpp" />
     <ClCompile Include="silkrad.cpp" />
+    <ClCompile Include="raytracer_optix.cpp">
+      <Filter>optix tracer</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <CudaCompile Include="cudabsp.cu" />
@@ -41,5 +50,10 @@
     <CudaCompile Include="fxaa.cu" />
     <CudaCompile Include="raytracer.cu" />
     <CudaCompile Include="bsp_shared.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <CustomBuild Include="raytracer_optix.cu">
+      <Filter>optix tracer</Filter>
+    </CustomBuild>
   </ItemGroup>
 </Project>

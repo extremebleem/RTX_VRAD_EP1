@@ -5,7 +5,6 @@
 #include "raytracer.h"
 #include "cudautils.h"
 
-
 namespace RayTracer {
     /* Implements the M-T ray-triangle intersection algorithm. */
     static __device__ bool intersects(
@@ -826,11 +825,20 @@ namespace RayTracer {
                 for (size_t ti = 0; ti < pNode->numTris; ++ti) {
                     Triangle& tri = m_triangles[pNode->triangleIDs[ti]];
 
+                    if (tri.flags & BSP::SURF_TRIGGER)
+                        continue;
+
                     if (tri.flags & BSP::SURF_SKY)
                         continue;
 
-                    // Осторожно: SURF_TRANS часто бывает у alpha-test текстур.
-                    // Если такие текстуры должны блокировать солнце — не skip-ать их вслепую.
+                    if (tri.flags & BSP::SURF_SKIP)
+                        continue;
+
+                    if (tri.flags & BSP::SURF_HINT)
+                        continue;
+
+                    // Be careful: SURF_TRANS is common on alpha-tested textures.
+                    // If those textures must block sunlight, do not skip them blindly.
                     if ((tri.flags & BSP::SURF_TRANS) && !(tri.flags & BSP::SURF_NODRAW))
                         continue;
 
@@ -875,7 +883,7 @@ namespace RayTracer {
             int leftChild = 0;
             int rightChild = 1;
 
-            // Луч почти параллелен split-plane.
+            // The ray is almost parallel to the split plane.
             if (fabsf(dirAxis) < EPS) {
                 float distToPlane = originAxis - pNode->pos;
 
@@ -886,9 +894,9 @@ namespace RayTracer {
                     stack[stackSize++] = { &children[rightChild], e.tMin, e.tMax };
                 }
                 else {
-                    // На самой плоскости — надо проверить оба child-а.
+                    // On the plane itself, check both children.
                     if (stackSize + 2 >= MAX_STACK)
-                        return true; // conservative: лучше тень, чем leak
+                        return true; // Conservative: prefer a shadow over a leak.
 
                     stack[stackSize++] = { &children[rightChild], e.tMin, e.tMax };
                     stack[stackSize++] = { &children[leftChild],  e.tMin, e.tMax };
