@@ -107,6 +107,8 @@ namespace BSP {
 
         load_lump(file, LUMP_TEXINFO, m_texInfos);
         load_lump(file, LUMP_TEXDATA, m_texDatas);
+        load_lump(file, LUMP_TEXDATA_STRING_DATA, m_texDataStringData);
+        load_lump(file, LUMP_TEXDATA_STRING_TABLE, m_texDataStringTable);
 
         for (DFace& faceData : m_dFaces) {
             //std::cout << faceData.texInfo << std::endl;
@@ -444,6 +446,35 @@ namespace BSP {
         return m_texDatas;
     }
 
+    const std::string BSP::get_texture_name(int32_t texDataIndex) const {
+        if (texDataIndex < 0
+            || static_cast<size_t>(texDataIndex) >= m_texDatas.size()) {
+            return std::string();
+        }
+
+        int32_t stringTableID = m_texDatas[texDataIndex].nameStringTableID;
+        if (stringTableID < 0
+            || static_cast<size_t>(stringTableID) >= m_texDataStringTable.size()) {
+            return std::string();
+        }
+
+        int32_t stringOffset = m_texDataStringTable[stringTableID];
+        if (stringOffset < 0
+            || static_cast<size_t>(stringOffset) >= m_texDataStringData.size()) {
+            return std::string();
+        }
+
+        const char* start = m_texDataStringData.data() + stringOffset;
+        const char* end = m_texDataStringData.data() + m_texDataStringData.size();
+        const char* p = start;
+
+        while (p < end && *p != '\0') {
+            ++p;
+        }
+
+        return std::string(start, p);
+    }
+
     std::vector<Face>& BSP::get_faces(void) {
         return m_faces;
     }
@@ -616,6 +647,8 @@ namespace BSP {
 
         save_lump(file, LUMP_TEXINFO, m_texInfos);
         save_lump(file, LUMP_TEXDATA, m_texDatas);
+        save_lump(file, LUMP_TEXDATA_STRING_DATA, m_texDataStringData);
+        save_lump(file, LUMP_TEXDATA_STRING_TABLE, m_texDataStringTable);
         save_lump(file, LUMP_NODES, m_nodes);
         save_lump(file, LUMP_LEAFS, m_leaves);
         save_lump(file, LUMP_LEAFBRUSHES, m_leafBrushes);
@@ -951,6 +984,30 @@ namespace BSP {
         }
     }
 
+    void BSP::clear_baked_lighting(void) {
+        const RGBExp32 black{ 0, 0, 0, 0 };
+
+        std::fill(m_lightSamples.begin(), m_lightSamples.end(), black);
+
+        for (CompressedLightCube& cube : m_ambientLightSamples) {
+            for (RGBExp32& side : cube.color) {
+                side = black;
+            }
+        }
+
+        const int32_t detailLightingLumps[] = {
+            GAMELUMP_DETAIL_PROP_LIGHTING,
+            GAMELUMP_DETAIL_PROP_LIGHTING_HDR,
+        };
+
+        for (int32_t lumpId : detailLightingLumps) {
+            auto it = m_extraGameLumps.find(lumpId);
+            if (it != m_extraGameLumps.end()) {
+                std::fill(it->second.begin(), it->second.end(), 0);
+            }
+        }
+    }
+
     void BSP::init_ambient_samples(void) {
         /*m_ambientLightSamples.clear();
         m_ambientLightSamples.resize(m_leaves.size());
@@ -1229,13 +1286,7 @@ namespace BSP {
         double tz = m_texInfo.lightmapVecs[1][2];
 
         Vec3<float> n = m_planeData.normal;
-        if (m_faceData.side)
-        {
-            n.x *= -1.f;
-            n.y *= -1.f;
-            n.z *= -1.f;
-        }
-            
+
         double nx = n.x;
         double ny = n.y;
         double nz = n.z;
@@ -1355,8 +1406,6 @@ namespace BSP {
         double dt = t - m_texInfo.lightmapVecs[1][3];
 
         double d = m_planeData.dist;
-        if (m_faceData.side)
-            d = -d;
 
         double x = m_Ainv[0][0] * ds + m_Ainv[0][1] * dt + m_Ainv[0][2] * d;
         double y = m_Ainv[1][0] * ds + m_Ainv[1][1] * dt + m_Ainv[1][2] * d;

@@ -388,3 +388,7 @@ MigrationBackup/
 
 # Portal files
 *.prt
+*.db
+*.db-shm
+*.db-wal
+*.md

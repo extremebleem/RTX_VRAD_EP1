@@ -14,6 +14,91 @@
 
 #include "cudautils.h"
 
+struct CommandLineOptions {
+    std::string inputFilename;
+    std::string outputFilename;
+    std::string gameRoot;
+};
+
+static std::string infer_asset_root_from_bsp(const std::string& filename) {
+    std::string normalized = filename;
+    for (char& c : normalized) {
+        if (c == '/') {
+            c = '\\';
+        }
+    }
+
+    const std::string mapsToken = "\\maps\\";
+    size_t mapsPos = normalized.rfind(mapsToken);
+    if (mapsPos != std::string::npos) {
+        return normalized.substr(0, mapsPos);
+    }
+
+    size_t slashPos = normalized.find_last_of('\\');
+    if (slashPos != std::string::npos) {
+        return normalized.substr(0, slashPos);
+    }
+
+    return ".";
+}
+
+static void print_usage(void) {
+    std::cerr
+        << "Usage: SilkRAD.exe <input.bsp> [output.bsp] -game <mod_root_or_gameinfo.gi>"
+        << std::endl
+        << "Example: SilkRAD.exe D:\\games\\CSS_LOVE\\cstrike\\maps\\de_brigia_hvh.bsp "
+        << "D:\\games\\CSS_LOVE\\cstrike\\maps\\out.bsp -game D:\\games\\CSS_LOVE\\cstrike"
+        << std::endl
+        << "Example: SilkRAD.exe D:\\games\\CSS_LOVE\\cstrike\\maps\\de_brigia_hvh.bsp "
+        << "D:\\games\\CSS_LOVE\\cstrike\\maps\\out.bsp -game D:\\games\\CSS_LOVE\\cstrike\\gameinfo.gi"
+        << std::endl;
+}
+
+static bool parse_command_line(
+    int argc,
+    char** argv,
+    CommandLineOptions& options
+) {
+    std::vector<std::string> positional;
+
+    for (int i = 1; i < argc; ++i) {
+        const std::string arg(argv[i]);
+
+        if (arg == "-game" || arg == "--game") {
+            if (i + 1 >= argc) {
+                std::cerr << "Missing value after " << arg << "." << std::endl;
+                return false;
+            }
+
+            options.gameRoot = argv[++i];
+            continue;
+        }
+
+        positional.push_back(arg);
+    }
+
+    if (positional.empty()) {
+        return false;
+    }
+
+    options.inputFilename = positional[0];
+    options.outputFilename =
+        positional.size() >= 2
+            ? positional[1]
+            : std::string("D:\\games\\CSS_LOVE\\cstrike\\maps\\out.bsp");
+
+    if (options.gameRoot.empty() && positional.size() >= 3) {
+        options.gameRoot = positional[2];
+    }
+
+    if (positional.size() > 3) {
+        std::cerr << "Too many positional arguments." << std::endl;
+        return false;
+    }
+
+    return true;
+}
+
 
 void print_cudainfo(void) {
     int device;
@@ -44,17 +129,17 @@ void print_cudainfo(void) {
 
 
 int main(int argc, char** argv) {
-    if (argc < 2) {
+    CommandLineOptions options;
+    if (!parse_command_line(argc, argv, options)) {
         std::cerr << "Invalid arguments." << std::endl;
+        print_usage();
         return 1;
     }
 
     std::cout << "SilkRAD -- GPU-Accelerated Radiosity Simulator" << std::endl;
 
-    const std::string filename(argv[1]);
-    const std::string outputFilename =
-        argc >= 3 ? std::string(argv[2])
-                  : std::string("D:\\games\\CSS_LOVE\\cstrike\\maps\\out.bsp");
+    const std::string filename(options.inputFilename);
+    const std::string outputFilename(options.outputFilename);
     std::ifstream f(filename, std::ios::binary);
 
     std::unique_ptr<BSP::BSP> pBSP;
@@ -92,6 +177,18 @@ int main(int argc, char** argv) {
     }
 
     pBSP->build_worldlights();
+    pBSP->clear_baked_lighting();
+
+    if (options.gameRoot.empty()) {
+        options.gameRoot = infer_asset_root_from_bsp(filename);
+        std::cout
+            << "WARNING: -game was not specified; falling back to inferred game root: "
+            << options.gameRoot << std::endl;
+    }
+    else {
+        std::cout << "Game root: " << options.gameRoot << std::endl;
+    }
+    CUDARAD::set_asset_root(options.gameRoot);
 
     print_cudainfo();
 
@@ -99,6 +196,7 @@ int main(int argc, char** argv) {
 
     std::cout << "Copy BSP to device memory..." << std::endl;
     CUDABSP::CUDABSP* pCudaBSP = CUDABSP::make_cudabsp(*pBSP);
+    CUDABSP::clear_lighting(pCudaBSP);
 
     std::cout << "Initialize radiosity subsystem..." << std::endl;
     CUDARAD::init(*pBSP);

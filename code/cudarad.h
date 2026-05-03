@@ -1,6 +1,7 @@
 #ifndef __CUDARAD_H_
 #define __CUDARAD_H_
 
+#include <string>
 #include <vector>
 
 #include "bsp.h"
@@ -44,6 +45,7 @@ namespace DirectLighting {
 }
 
 namespace CUDARAD {
+    void set_asset_root(const std::string& assetRoot);
     void init(BSP::BSP& bsp);
     void cleanup(void);
 

@@ -505,6 +505,39 @@ namespace CUDABSP {
         CUDA_CHECK_ERROR(cudaFree(pCudaBSP));
     }
 
+    void clear_lighting(CUDABSP* pCudaBSP) {
+        CUDABSP cudaBSP;
+
+        CUDA_CHECK_ERROR(
+            cudaMemcpy(
+                &cudaBSP, pCudaBSP, sizeof(CUDABSP),
+                cudaMemcpyDeviceToHost
+            )
+        );
+
+        if (cudaBSP.numLightSamples > 0) {
+            CUDA_CHECK_ERROR(cudaMemset(
+                cudaBSP.lightSamples,
+                0,
+                sizeof(float3) * cudaBSP.numLightSamples
+            ));
+            CUDA_CHECK_ERROR(cudaMemset(
+                cudaBSP.rgbExp32LightSamples,
+                0,
+                sizeof(BSP::RGBExp32) * cudaBSP.numLightSamples
+            ));
+        }
+
+        if (cudaBSP.numAmbientLightSamples > 0) {
+            CUDA_CHECK_ERROR(cudaMemset(
+                cudaBSP.ambientLightSamples,
+                0,
+                sizeof(BSP::CompressedLightCube)
+                    * cudaBSP.numAmbientLightSamples
+            ));
+        }
+    }
+
     void convert_lightsamples(CUDABSP* pCudaBSP) {
         CUDABSP cudaBSP;
 

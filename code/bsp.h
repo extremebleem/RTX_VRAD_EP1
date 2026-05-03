@@ -628,6 +628,8 @@ namespace BSP {
             std::vector<RGBExp32> m_lightSamples;
             std::vector<TexInfo> m_texInfos;
             std::vector<DTexData> m_texDatas;
+            std::vector<char> m_texDataStringData;
+            std::vector<int32_t> m_texDataStringTable;
             std::vector<Face> m_faces;
             std::vector<DNode> m_nodes;
             std::vector<DLeaf> m_leaves;
@@ -744,6 +746,7 @@ namespace BSP {
             const std::vector<RGBExp32>& get_lightsamples(void) const;
             const std::vector<TexInfo>& get_texinfos(void) const;
             const std::vector<DTexData>& get_texdatas(void) const;
+            const std::string get_texture_name(int32_t texDataIndex) const;
 
             std::vector<Face>& get_faces(void);
             const std::vector<Face>& get_faces(void) const;
@@ -777,6 +780,7 @@ namespace BSP {
             const std::map<int32_t, GameLump>& get_gamelumps(void) const;
 
             void build_worldlights(void);
+            void clear_baked_lighting(void);
             void init_ambient_samples(void);
 
             bool is_fullbright(void) const;

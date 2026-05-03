@@ -72,6 +72,9 @@ namespace CUDABSP {
     /** Destroys the given CUDABSP located on the device. */
     void destroy_cudabsp(CUDABSP* pCudaBSP);
 
+    /** Clears imported BSP lighting so output cannot reuse old lightmaps. */
+    void clear_lighting(CUDABSP* pCudaBSP);
+
     /** Convert lightsamples from float3 to RGBExp32 format. */
     void convert_lightsamples(CUDABSP* pCudaBSP);
 
