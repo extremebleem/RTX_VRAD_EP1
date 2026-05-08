@@ -20,11 +20,28 @@
     <ClInclude Include="fxaa.h" />
     <ClInclude Include="raytracer.h" />
     <ClInclude Include="raytracer_optix.h" />
+    <ClInclude Include="v2\bridge\backend.h" />
+    <ClInclude Include="v2\bsp\source_map.h" />
+    <ClInclude Include="v2\common\math.h" />
+    <ClInclude Include="v2\common\types.h" />
+    <ClInclude Include="v2\geometry\disp_geometry.h" />
+    <ClInclude Include="v2\geometry\face_geometry.h" />
+    <ClInclude Include="v2\lighting\ambient_lighting.h" />
+    <ClInclude Include="v2\lighting\direct_lighting.h" />
+    <ClInclude Include="v2\scene\scene_builder.h" />
+    <ClInclude Include="vrad_face_geometry.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="silkrad.cpp" />
     <ClCompile Include="bsp.cpp" />
     <ClCompile Include="raytracer_optix.cpp" />
+    <ClCompile Include="v2\bridge\backend.cpp" />
+    <ClCompile Include="v2\bsp\source_map.cpp" />
+    <ClCompile Include="v2\geometry\disp_geometry.cpp" />
+    <ClCompile Include="v2\geometry\face_geometry.cpp" />
+    <ClCompile Include="v2\lighting\ambient_lighting.cpp" />
+    <ClCompile Include="v2\lighting\direct_lighting.cpp" />
+    <ClCompile Include="v2\scene\scene_builder.cpp" />
   </ItemGroup>
   <ItemGroup>
     <CudaCompile Include="bsp_shared.cpp" />
@@ -100,6 +117,7 @@
       <TargetMachinePlatform>64</TargetMachinePlatform>
       <CodeGeneration>compute_52,sm_52</CodeGeneration>
       <GenerateRelocatableDeviceCode>true</GenerateRelocatableDeviceCode>
+      <AdditionalOptions>--std=c++17 %(AdditionalOptions)</AdditionalOptions>
     </CudaCompile>
     <CudaLink>
       <AdditionalLibraryDirectories>

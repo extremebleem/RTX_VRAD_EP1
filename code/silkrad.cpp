@@ -18,6 +18,7 @@ struct CommandLineOptions {
     std::string inputFilename;
     std::string outputFilename;
     std::string gameRoot;
+    std::string backendName = "legacy";
 };
 
 static std::string infer_asset_root_from_bsp(const std::string& filename) {
@@ -45,6 +46,7 @@ static std::string infer_asset_root_from_bsp(const std::string& filename) {
 static void print_usage(void) {
     std::cerr
         << "Usage: SilkRAD.exe <input.bsp> [output.bsp] -game <mod_root_or_gameinfo.gi>"
+        << " [--backend legacy|v2]"
         << std::endl
         << "Example: SilkRAD.exe D:\\games\\CSS_LOVE\\cstrike\\maps\\de_brigia_hvh.bsp "
         << "D:\\games\\CSS_LOVE\\cstrike\\maps\\out.bsp -game D:\\games\\CSS_LOVE\\cstrike"
@@ -71,6 +73,16 @@ static bool parse_command_line(
             }
 
             options.gameRoot = argv[++i];
+            continue;
+        }
+
+        if (arg == "-backend" || arg == "--backend") {
+            if (i + 1 >= argc) {
+                std::cerr << "Missing value after " << arg << "." << std::endl;
+                return false;
+            }
+
+            options.backendName = argv[++i];
             continue;
         }
 
@@ -136,7 +148,18 @@ int main(int argc, char** argv) {
         return 1;
     }
 
+    CUDARAD::LightingBackendKind backendKind = CUDARAD::LightingBackendKind::Legacy;
+    if (options.backendName == "v2") {
+        backendKind = CUDARAD::LightingBackendKind::V2;
+    }
+    else if (options.backendName != "legacy") {
+        std::cerr << "Unsupported backend: " << options.backendName << std::endl;
+        print_usage();
+        return 1;
+    }
+
     std::cout << "SilkRAD -- GPU-Accelerated Radiosity Simulator" << std::endl;
+    std::cout << "Lighting backend: " << options.backendName << std::endl;
 
     const std::string filename(options.inputFilename);
     const std::string outputFilename(options.outputFilename);
@@ -189,6 +212,7 @@ int main(int argc, char** argv) {
         std::cout << "Game root: " << options.gameRoot << std::endl;
     }
     CUDARAD::set_asset_root(options.gameRoot);
+    CUDARAD::set_backend_kind(backendKind);
 
     print_cudainfo();
 
@@ -199,12 +223,22 @@ int main(int argc, char** argv) {
     CUDABSP::clear_lighting(pCudaBSP);
 
     std::cout << "Initialize radiosity subsystem..." << std::endl;
-    CUDARAD::init(*pBSP);
+    if (backendKind == CUDARAD::LightingBackendKind::V2) {
+        CUDARAD::init_v2(*pBSP);
+    }
+    else {
+        CUDARAD::init(*pBSP);
+    }
 
     std::cout << "*** Start RAD! ***" << std::endl;
 
     std::cout << "Compute direct lighting..." << std::endl;
-    CUDARAD::compute_direct_lighting(*pBSP, pCudaBSP);
+    if (backendKind == CUDARAD::LightingBackendKind::V2) {
+        CUDARAD::compute_direct_lighting_v2(*pBSP, pCudaBSP);
+    }
+    else {
+        CUDARAD::compute_direct_lighting(*pBSP, pCudaBSP);
+    }
 
     //std::cout << "Run lightmap FXAA passes..." << std::endl;
     //const size_t NUM_FXAA_PASSES = 5;
@@ -224,7 +258,12 @@ int main(int argc, char** argv) {
     //CUDARAD::bounce_lighting(*pBSP, pCudaBSP);
 
     std::cout << "Compute ambient lighting..." << std::endl;
-    //CUDARAD::compute_leaf_ambient(pCudaBSP);
+    if (backendKind == CUDARAD::LightingBackendKind::V2) {
+        //CUDARAD::compute_leaf_ambient_v2(*pBSP, pCudaBSP);
+    }
+    else {
+        //CUDARAD::compute_leaf_ambient(pCudaBSP);
+    }
 
     std::cout << "Convert light samples to RGBExp32..." << std::endl;
     CUDABSP::convert_lightsamples(pCudaBSP);

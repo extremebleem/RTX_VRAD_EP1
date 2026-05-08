@@ -33,6 +33,9 @@
 
 #include "cudautils.h"
 
+#include "v2/bridge/backend.h"
+#include "v2/lighting/ambient_lighting.h"
+
 
 #ifndef MAX_LIGHTSTYLES
 #define MAX_LIGHTSTYLES 4
@@ -96,6 +99,8 @@ namespace CUDARAD {
     static std::unique_ptr<RayTracer::CUDARayTracer> g_pRayTracer;
     static __device__ RayTracer::CUDARayTracer* g_pDeviceRayTracer;
     static std::unique_ptr<OptixRT::OptixSunLosTracer> g_pOptixTracer;
+    static LightingBackendKind g_backendKind = LightingBackendKind::Legacy;
+    static std::unique_ptr<SilkRAD::V2::Bridge::BackendState> g_v2BackendState;
     static std::vector<OptixRT::Triangle> g_optixTriangles;
     static std::vector<VradFaceGeometry::FaceGeometry> g_hostFaceGeometry;
     struct HostDisplacementSurface {
@@ -105,6 +110,7 @@ namespace CUDARAD {
         int gridSize = 0;
         int lightmapWidth = 0;
         int lightmapHeight = 0;
+        float3 faceNormal = make_float3(0.0f, 0.0f, 1.0f);
         std::vector<float3> vertices;
         std::vector<float3> normals;
     };
@@ -337,6 +343,14 @@ namespace CUDARAD {
         if (g_assetSearchRoots.empty()) {
             add_unique_search_root(g_assetSearchRoots, g_assetRoot);
         }
+    }
+
+    void set_backend_kind(LightingBackendKind kind) {
+        g_backendKind = kind;
+    }
+
+    LightingBackendKind get_backend_kind(void) {
+        return g_backendKind;
     }
 
     __device__ FaceInfo::FaceInfo() {};
@@ -2176,9 +2190,10 @@ namespace CUDARAD {
             return role | RTX_ROLE_TOOL;
         }
 
-        if ((flags & BSP::SURF_NODRAW)
-            || (flags & BSP::SURF_NOLIGHT)
-            || host_is_service_material(materialName)) {
+        if (!displacement
+            && ((flags & BSP::SURF_NODRAW)
+                || (flags & BSP::SURF_NOLIGHT)
+                || host_is_service_material(materialName))) {
             return role | RTX_ROLE_TOOL;
         }
 
@@ -2186,11 +2201,11 @@ namespace CUDARAD {
             return role | RTX_ROLE_TRANSLUCENT;
         }
 
-        if (!(flags & BSP::SURF_NOLIGHT)) {
+        if (displacement || !(flags & BSP::SURF_NOLIGHT)) {
             role |= RTX_ROLE_RECEIVER;
         }
 
-        if (!(flags & BSP::SURF_NOSHADOWS)) {
+        if (displacement || !(flags & BSP::SURF_NOSHADOWS)) {
             role |= RTX_ROLE_OCCLUDER;
         }
 
@@ -2446,11 +2461,13 @@ namespace CUDARAD {
 
         const BSP::DispInfo& disp = bsp.get_dispinfos()[face.dispInfo];
         const std::vector<BSP::DispVert>& dispVerts = bsp.get_dispverts();
+        const BSP::DPlane& plane = bsp.get_planes()[face.planeNum];
 
         out.dispInfoIndex = static_cast<size_t>(face.dispInfo);
         out.gridSize = (1 << disp.power) + 1;
         out.lightmapWidth = face.lightmapTextureSizeInLuxels[0] + 1;
         out.lightmapHeight = face.lightmapTextureSizeInLuxels[1] + 1;
+        out.faceNormal = host_normalized(make_float3(plane.normal));
 
         if (out.gridSize < 2
             || out.lightmapWidth <= 0
@@ -2548,7 +2565,10 @@ namespace CUDARAD {
         for (size_t index = 0; index < vertexCount; ++index) {
             float3 normal = host_normalized(normalSums[index]);
             if (len(normal) <= 1e-6f) {
-                normal = make_float3(0.0f, 0.0f, 1.0f);
+                normal = out.faceNormal;
+            }
+            if (dot(normal, out.faceNormal) < 0.0f) {
+                normal = normal * -1.0f;
             }
             out.normals[index] = normal;
         }
@@ -2634,7 +2654,10 @@ namespace CUDARAD {
         }
 
         if (len(normal) <= 1e-6f) {
-            return false;
+            normal = disp.faceNormal;
+        }
+        if (dot(normal, disp.faceNormal) < 0.0f) {
+            normal = normal * -1.0f;
         }
 
         outPos = point + normal * pushEps;
@@ -2645,6 +2668,7 @@ namespace CUDARAD {
         const HostDisplacementSurface& disp,
         float u,
         float v,
+        float pushEps,
         float3& outPos,
         float3& outNormal
     )
@@ -2656,7 +2680,7 @@ namespace CUDARAD {
         u = std::max(0.0f, std::min(u, 1.0f));
         v = std::max(0.0f, std::min(v, 1.0f));
 
-        if (!host_disp_uv_to_surf_point(disp, u, v, 0.0f, outPos)) {
+        if (!host_disp_uv_to_surf_point(disp, u, v, pushEps, outPos)) {
             return false;
         }
 
@@ -2686,7 +2710,10 @@ namespace CUDARAD {
         );
         normal = host_normalized(normal);
         if (len(normal) <= 1e-6f) {
-            return false;
+            normal = disp.faceNormal;
+        }
+        if (dot(normal, disp.faceNormal) < 0.0f) {
+            normal = normal * -1.0f;
         }
 
         outNormal = normal;
@@ -3693,17 +3720,23 @@ namespace CUDARAD {
                             const size_t i10 = static_cast<size_t>(y) * disp.gridSize + (x + 1);
                             const size_t i11 = static_cast<size_t>(y + 1) * disp.gridSize + (x + 1);
                             const size_t i01 = static_cast<size_t>(y + 1) * disp.gridSize + x;
+                            const bool odd = (((y * disp.gridSize) + x) & 1) != 0;
 
                             const float3 quad[4] = {
                                 disp.vertices[i00],
-                                disp.vertices[i10],
-                                disp.vertices[i11],
                                 disp.vertices[i01],
+                                disp.vertices[i11],
+                                disp.vertices[i10],
                             };
-                            const int tris[2][3] = {
-                                { 0, 1, 2 },
-                                { 0, 2, 3 },
-                            };
+                            int tris[2][3];
+                            if (odd) {
+                                tris[0][0] = 0; tris[0][1] = 1; tris[0][2] = 3;
+                                tris[1][0] = 1; tris[1][1] = 2; tris[1][2] = 3;
+                            }
+                            else {
+                                tris[0][0] = 0; tris[0][1] = 1; tris[0][2] = 2;
+                                tris[1][0] = 0; tris[1][1] = 2; tris[1][2] = 3;
+                            }
 
                             for (int triIndex = 0; triIndex < 2; ++triIndex) {
                                 float3 a = quad[tris[triIndex][0]];
@@ -3715,11 +3748,12 @@ namespace CUDARAD {
                                 }
 
                                 const float3 center = (a + b + c) / 3.0f;
+                                const float dispExpand = 0.0f;
 
                                 OptixRT::Triangle tri{};
-                                tri.v0 = a + host_normalized(a - center) * HOST_OCCLUDER_WIDEN_EPSILON;
-                                tri.v1 = b + host_normalized(b - center) * HOST_OCCLUDER_WIDEN_EPSILON;
-                                tri.v2 = c + host_normalized(c - center) * HOST_OCCLUDER_WIDEN_EPSILON;
+                                tri.v0 = a + host_normalized(a - center) * dispExpand;
+                                tri.v1 = b + host_normalized(b - center) * dispExpand;
+                                tri.v2 = c + host_normalized(c - center) * dispExpand;
                                 tri.sourceId = static_cast<uint32_t>(face.id);
                                 tri.role = role;
                                 tri.visibilityMask = 0xff;
@@ -4030,6 +4064,27 @@ namespace CUDARAD {
         return g_optixTriangles[hit.primitiveIndex].role;
     }
 
+    static std::vector<char> load_optix_ptx();
+
+    static void host_rebuild_optix_world_from_v2(void)
+    {
+        if (!g_v2BackendState) {
+            return;
+        }
+
+        SilkRAD::V2::Lighting::build_runtime_world(
+            *g_v2BackendState,
+            g_optixTriangles
+        );
+
+        std::vector<char> ptx = load_optix_ptx();
+        if (!g_pOptixTracer) {
+            g_pOptixTracer.reset(new OptixRT::OptixSunLosTracer());
+            g_pOptixTracer->init(ptx.data(), ptx.size());
+        }
+        g_pOptixTracer->build_world_gas(g_optixTriangles);
+    }
+
     static float host_luxel_coord(
         size_t coord,
         size_t size,
@@ -4117,74 +4172,6 @@ namespace CUDARAD {
         return color;
     }
 
-    static void host_filter_displacement_direct_lighting(
-        const BSP::BSP& bsp,
-        const std::vector<HostDisplacementSurface>& dispSurfaces,
-        std::vector<float3>& lightSamples
-    )
-    {
-        std::vector<float3> filtered = lightSamples;
-
-        static const float kWeights[3][3] = {
-            { 1.0f, 2.0f, 1.0f },
-            { 2.0f, 4.0f, 2.0f },
-            { 1.0f, 2.0f, 1.0f },
-        };
-
-        for (size_t faceIndex = 0; faceIndex < bsp.get_dfaces().size(); ++faceIndex) {
-            const BSP::DFace& face = bsp.get_dfaces()[faceIndex];
-            if (face.lightOffset < 0
-                || face.dispInfo < 0
-                || faceIndex >= dispSurfaces.size()
-                || !dispSurfaces[faceIndex].valid) {
-                continue;
-            }
-
-            const size_t width =
-                static_cast<size_t>(face.lightmapTextureSizeInLuxels[0] + 1);
-            const size_t height =
-                static_cast<size_t>(face.lightmapTextureSizeInLuxels[1] + 1);
-            const size_t start =
-                static_cast<size_t>(face.lightOffset) / sizeof(BSP::RGBExp32);
-
-            for (size_t t = 0; t < height; ++t) {
-                for (size_t s = 0; s < width; ++s) {
-                    float3 accum = make_float3(0.0f, 0.0f, 0.0f);
-                    float totalWeight = 0.0f;
-
-                    for (int dy = -1; dy <= 1; ++dy) {
-                        const int nt = static_cast<int>(t) + dy;
-                        if (nt < 0 || nt >= static_cast<int>(height)) {
-                            continue;
-                        }
-
-                        for (int dx = -1; dx <= 1; ++dx) {
-                            const int ns = static_cast<int>(s) + dx;
-                            if (ns < 0 || ns >= static_cast<int>(width)) {
-                                continue;
-                            }
-
-                            const float weight = kWeights[dy + 1][dx + 1];
-                            const size_t sampleIndex =
-                                start
-                                + static_cast<size_t>(nt) * width
-                                + static_cast<size_t>(ns);
-                            accum += lightSamples[sampleIndex] * weight;
-                            totalWeight += weight;
-                        }
-                    }
-
-                    if (totalWeight > 0.0f) {
-                        filtered[start + t * width + s] =
-                            accum / totalWeight;
-                    }
-                }
-            }
-        }
-
-        lightSamples.swap(filtered);
-    }
-
     void init(BSP::BSP& bsp) {
         std::cout << "Setting up OptiX ray-trace acceleration structure... "
             << std::flush;
@@ -4234,9 +4221,34 @@ namespace CUDARAD {
             << std::endl;
     }
 
+    void init_v2(BSP::BSP& bsp) {
+        g_hostFaceGeometry.clear();
+        g_hostDispSurfaces.clear();
+        SilkRAD::V2::BSP::SourceMap sourceMap(bsp);
+        SilkRAD::V2::Bridge::BuildOptions options;
+        options.assetSearchRoots = host_asset_roots();
+        g_v2BackendState.reset(new SilkRAD::V2::Bridge::BackendState(
+            SilkRAD::V2::Bridge::build_backend_state(sourceMap, options)
+        ));
+        host_rebuild_optix_world_from_v2();
+        bsp.init_ambient_samples();
+
+        const SilkRAD::V2::Lighting::DirectLightingResult& direct =
+            g_v2BackendState->directLightingInputs;
+        std::cout << "Initialized v2 backend state ("
+            << direct.ordinaryFaceCount << " ordinary faces, "
+            << direct.displacementFaceCount << " displacement faces, "
+            << direct.worldTriangleCount << " world face triangles, "
+            << direct.worldBrushTriangleCount << " world brush triangles, "
+            << direct.displacementTriangleCount << " displacement triangles, "
+            << direct.staticPropTriangleCount << " static prop triangles)"
+            << std::endl;
+    }
+
     void cleanup(void) {
         g_pOptixTracer = nullptr;
         g_pRayTracer = nullptr;
+        g_v2BackendState.reset();
         g_optixTriangles.clear();
         g_hostFaceGeometry.clear();
         g_hostDispSurfaces.clear();
@@ -4284,7 +4296,6 @@ namespace CUDARAD {
         std::vector<OptixRT::SunRay> rays;
         std::vector<RayContribution> contributions;
         float3 skyAmbient = host_find_sky_ambient(bsp);
-
         size_t numFaces = bsp.get_faces().size();
         size_t processedFaces = 0;
 
@@ -4369,6 +4380,7 @@ namespace CUDARAD {
                                 *pDispSurface,
                                 u,
                                 v,
+                                1.0f,
                                 samplePos,
                                 sampleNormal
                             )) {
@@ -4376,7 +4388,6 @@ namespace CUDARAD {
                             }
 
                             n = sampleNormal;
-                            samplePos = samplePos + sampleNormal * HOST_RAY_BIAS;
                         }
                         else if (pCanonicalSample) {
                             samplePos = pCanonicalSample->pos + sampleNormal * HOST_RAY_BIAS;
@@ -4632,12 +4643,6 @@ namespace CUDARAD {
             }
         }
 
-        host_filter_displacement_direct_lighting(
-            bsp,
-            g_hostDispSurfaces,
-            lightSamples
-        );
-
         std::vector<float3> faceAverages(numFaces, make_float3());
 
         for (size_t faceIndex = 0; faceIndex < numFaces; ++faceIndex) {
@@ -4708,13 +4713,12 @@ namespace CUDARAD {
                             *pDispSurface,
                             u,
                             v,
+                            1.0f,
                             samplePos,
                             sampleNormal
                         )) {
                             continue;
                         }
-
-                        samplePos = samplePos + sampleNormal * HOST_RAY_BIAS;
                     }
                     else {
                         float ss = clampf_host(
@@ -5001,6 +5005,52 @@ namespace CUDARAD {
         std::cout << "Done! (" << ms.count() << " ms)" << std::endl;
     }
 
+    void compute_direct_lighting_v2(BSP::BSP& bsp, CUDABSP::CUDABSP* pCudaBSP) {
+        if (!g_v2BackendState) {
+            init_v2(bsp);
+        }
+
+        const SilkRAD::V2::Lighting::DirectLightingResult& direct =
+            g_v2BackendState->directLightingInputs;
+        std::cout << "v2 direct-lighting bridge using canonical geometry ("
+            << direct.ordinaryFaceCount << " ordinary, "
+            << direct.displacementFaceCount << " displacement, "
+            << direct.worldTriangleCount << " world-face tris, "
+            << direct.worldBrushTriangleCount << " world-brush tris, "
+            << direct.displacementTriangleCount << " disp tris, "
+            << direct.staticPropTriangleCount << " static-prop tris)"
+            << std::endl;
+
+        if (!g_pOptixTracer) {
+            throw std::runtime_error("CUDARAD::init_v2 must create the OptiX tracer before direct lighting");
+        }
+
+        SilkRAD::V2::Lighting::compute_direct_lighting_runtime(
+            bsp,
+            pCudaBSP,
+            *g_v2BackendState,
+            g_optixTriangles,
+            *g_pOptixTracer
+        );
+    }
+
+    void compute_leaf_ambient_v2(BSP::BSP& bsp, CUDABSP::CUDABSP* pCudaBSP) {
+        if (!g_v2BackendState) {
+            init_v2(bsp);
+        }
+
+        if (!g_pOptixTracer) {
+            throw std::runtime_error("CUDARAD::init_v2 must create the OptiX tracer before leaf ambient");
+        }
+
+        SilkRAD::V2::Lighting::compute_leaf_ambient_from_cuda_runtime(
+            bsp,
+            pCudaBSP,
+            *g_v2BackendState,
+            *g_pOptixTracer
+        );
+    }
+
     void antialias_direct_lighting(BSP::BSP& bsp, CUDABSP::CUDABSP* pCudaBSP) {
         cudaEvent_t startEvent;
         cudaEvent_t stopEvent;
@@ -5105,6 +5155,13 @@ namespace CUDARAD {
 
     void compute_leaf_ambient(CUDABSP::CUDABSP* pCudaBSP)
     {
+        if (g_backendKind == LightingBackendKind::V2) {
+            std::cout
+                << "Skipping legacy leaf ambient pass; v2 backend already wrote leaf ambient."
+                << std::endl;
+            return;
+        }
+
         LeafAmbient::run(pCudaBSP);
     }
 

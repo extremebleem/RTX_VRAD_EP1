@@ -45,11 +45,21 @@ namespace DirectLighting {
 }
 
 namespace CUDARAD {
+    enum class LightingBackendKind {
+        Legacy,
+        V2,
+    };
+
     void set_asset_root(const std::string& assetRoot);
+    void set_backend_kind(LightingBackendKind kind);
+    LightingBackendKind get_backend_kind(void);
     void init(BSP::BSP& bsp);
+    void init_v2(BSP::BSP& bsp);
     void cleanup(void);
 
     void compute_direct_lighting(BSP::BSP& bsp, CUDABSP::CUDABSP* pCudaBSP);
+    void compute_direct_lighting_v2(BSP::BSP& bsp, CUDABSP::CUDABSP* pCudaBSP);
+    void compute_leaf_ambient_v2(BSP::BSP& bsp, CUDABSP::CUDABSP* pCudaBSP);
     void antialias_direct_lighting(BSP::BSP& bsp, CUDABSP::CUDABSP* pCudaBSP);
 
     void bounce_lighting(BSP::BSP& bsp, CUDABSP::CUDABSP* pCudaBSP);

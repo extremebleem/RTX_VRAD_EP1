@@ -1,6 +1,3 @@
-#ifndef __VRAD_FACE_GEOMETRY_H_
-#define __VRAD_FACE_GEOMETRY_H_
-
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
@@ -625,5 +622,3 @@ namespace VradFaceGeometry {
         return true;
     }
 }
-
-#endif

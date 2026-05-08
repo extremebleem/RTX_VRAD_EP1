@@ -7,6 +7,9 @@
     <Filter Include="optix tracer">
       <UniqueIdentifier>{5554ad9c-0a69-4ad9-89a8-e32b461f2bee}</UniqueIdentifier>
     </Filter>
+    <Filter Include="v2">
+      <UniqueIdentifier>{e15e07bc-b27a-45b0-a9a6-e3c208f5b022}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="bsp.h">
@@ -36,12 +39,63 @@
     <ClInclude Include="raytracer_optix.h">
       <Filter>optix tracer</Filter>
     </ClInclude>
+    <ClInclude Include="vrad_face_geometry.h">
+      <Filter>headers</Filter>
+    </ClInclude>
+    <ClInclude Include="v2\bridge\backend.h">
+      <Filter>v2</Filter>
+    </ClInclude>
+    <ClInclude Include="v2\bsp\source_map.h">
+      <Filter>v2</Filter>
+    </ClInclude>
+    <ClInclude Include="v2\common\math.h">
+      <Filter>v2</Filter>
+    </ClInclude>
+    <ClInclude Include="v2\common\types.h">
+      <Filter>v2</Filter>
+    </ClInclude>
+    <ClInclude Include="v2\geometry\disp_geometry.h">
+      <Filter>v2</Filter>
+    </ClInclude>
+    <ClInclude Include="v2\geometry\face_geometry.h">
+      <Filter>v2</Filter>
+    </ClInclude>
+    <ClInclude Include="v2\lighting\ambient_lighting.h">
+      <Filter>v2</Filter>
+    </ClInclude>
+    <ClInclude Include="v2\lighting\direct_lighting.h">
+      <Filter>v2</Filter>
+    </ClInclude>
+    <ClInclude Include="v2\scene\scene_builder.h">
+      <Filter>v2</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="bsp.cpp" />
     <ClCompile Include="silkrad.cpp" />
     <ClCompile Include="raytracer_optix.cpp">
       <Filter>optix tracer</Filter>
+    </ClCompile>
+    <ClCompile Include="v2\bridge\backend.cpp">
+      <Filter>v2</Filter>
+    </ClCompile>
+    <ClCompile Include="v2\bsp\source_map.cpp">
+      <Filter>v2</Filter>
+    </ClCompile>
+    <ClCompile Include="v2\geometry\disp_geometry.cpp">
+      <Filter>v2</Filter>
+    </ClCompile>
+    <ClCompile Include="v2\geometry\face_geometry.cpp">
+      <Filter>v2</Filter>
+    </ClCompile>
+    <ClCompile Include="v2\lighting\ambient_lighting.cpp">
+      <Filter>v2</Filter>
+    </ClCompile>
+    <ClCompile Include="v2\lighting\direct_lighting.cpp">
+      <Filter>v2</Filter>
+    </ClCompile>
+    <ClCompile Include="v2\scene\scene_builder.cpp">
+      <Filter>v2</Filter>
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
