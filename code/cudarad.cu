@@ -29,7 +29,6 @@
 #include "geometry_rules.h"
 #include "raytracer.h"
 #include "raytracer_optix.h"
-#include "vrad_face_geometry.h"
 
 #include "cudautils.h"
 

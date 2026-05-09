@@ -12,6 +12,7 @@ SilkRAD — это компилятор lightmap для Source BSP с CUDA/OptiX
 - [docs/02-core-architecture.md](docs/02-core-architecture.md) — устройство `core`
 - [docs/03-development-workflow.md](docs/03-development-workflow.md) — как вносить изменения без хаоса
 - [docs/04-current-gaps.md](docs/04-current-gaps.md) — что ещё не доведено до `VRAD 1:1`
+- [docs/05-vrad-mapping.md](docs/05-vrad-mapping.md) — карта соответствий `core` и исходного `VRAD`
 
 Быстрый запуск:
 ```text

@@ -281,7 +281,7 @@ namespace SilkRAD::Core::Geometry {
             }
         }
 
-        void append_fallback_luxel_sample(
+        void append_fallback_face_sample(
             FaceGeometry& geometry,
             const ::BSP::DFace& face,
             int s,
@@ -306,6 +306,75 @@ namespace SilkRAD::Core::Geometry {
             );
             sample.normal = geometry.faceNormal;
             geometry.samples.values.push_back(sample);
+        }
+
+        void append_ordinary_face_samples(
+            FaceGeometry& geometry,
+            const ::BSP::DFace& face
+        )
+        {
+            for (size_t t = 0; t < geometry.lightmap.height; ++t) {
+                for (size_t s = 0; s < geometry.lightmap.width; ++s) {
+                    const std::vector<Common::Vec2f> cell = clip_poly_rect(
+                        geometry.faceWindingLuxel,
+                        static_cast<float>(s),
+                        static_cast<float>(s + 1),
+                        static_cast<float>(t),
+                        static_cast<float>(t + 1)
+                    );
+
+                    if (cell.size() < 3) {
+                        append_fallback_face_sample(
+                            geometry,
+                            face,
+                            static_cast<int>(s),
+                            static_cast<int>(t)
+                        );
+                        continue;
+                    }
+
+                    Common::Vec2f center;
+                    const float area = polygon_area_and_centroid(cell, center);
+                    if (area <= 1e-6f) {
+                        append_fallback_face_sample(
+                            geometry,
+                            face,
+                            static_cast<int>(s),
+                            static_cast<int>(t)
+                        );
+                        continue;
+                    }
+
+                    Common::Vec2f mins;
+                    Common::Vec2f maxs;
+                    polygon_bounds(cell, mins, maxs);
+
+                    Common::ReceiverSample sample;
+                    sample.s = s;
+                    sample.t = t;
+                    sample.coord = center;
+                    sample.mins = mins;
+                    sample.maxs = maxs;
+                    sample.polygon = cell;
+                    sample.area = area * geometry.worldAreaPerLuxel;
+                    sample.pos = luxel_space_to_world(
+                        geometry,
+                        center.x,
+                        center.y,
+                        face
+                    );
+                    if (sample.area < geometry.worldAreaPerLuxel - 0.001f) {
+                        sample.worldPolygon.reserve(cell.size());
+                        for (const Common::Vec2f& pt : cell) {
+                            sample.worldPolygon.push_back(
+                                luxel_space_to_world(geometry, pt.x, pt.y, face)
+                            );
+                        }
+                    }
+                    sample.normal = geometry.faceNormal;
+                    geometry.samples.values.push_back(sample);
+                }
+            }
         }
     }
 
@@ -515,68 +584,7 @@ namespace SilkRAD::Core::Geometry {
         }
 
         if (!geometry.isDisplacement) {
-            for (size_t t = 0; t < geometry.lightmap.height; ++t) {
-                for (size_t s = 0; s < geometry.lightmap.width; ++s) {
-                    const std::vector<Common::Vec2f> cell = clip_poly_rect(
-                        geometry.faceWindingLuxel,
-                        static_cast<float>(s),
-                        static_cast<float>(s + 1),
-                        static_cast<float>(t),
-                        static_cast<float>(t + 1)
-                    );
-
-                    if (cell.size() < 3) {
-                        append_fallback_luxel_sample(
-                            geometry,
-                            face,
-                            static_cast<int>(s),
-                            static_cast<int>(t)
-                        );
-                        continue;
-                    }
-
-                    Common::Vec2f center;
-                    const float area = polygon_area_and_centroid(cell, center);
-                    if (area <= 1e-6f) {
-                        append_fallback_luxel_sample(
-                            geometry,
-                            face,
-                            static_cast<int>(s),
-                            static_cast<int>(t)
-                        );
-                        continue;
-                    }
-
-                    Common::Vec2f mins;
-                    Common::Vec2f maxs;
-                    polygon_bounds(cell, mins, maxs);
-
-                    Common::ReceiverSample sample;
-                    sample.s = s;
-                    sample.t = t;
-                    sample.coord = center;
-                    sample.mins = mins;
-                    sample.maxs = maxs;
-                    sample.polygon = cell;
-                    sample.area = area * geometry.worldAreaPerLuxel;
-                    sample.pos = luxel_space_to_world(
-                        geometry,
-                        center.x,
-                        center.y,
-                        face
-                    );
-                    if (sample.area < geometry.worldAreaPerLuxel - 0.001f) {
-                        sample.worldPolygon.reserve(cell.size());
-                        for (const Common::Vec2f& pt : cell) {
-                            sample.worldPolygon.push_back(
-                                luxel_space_to_world(geometry, pt.x, pt.y, face)
-                            );
-                        }
-                    }
-                    sample.normal = geometry.faceNormal;
-                    geometry.samples.values.push_back(sample);
-                }
-            }
+            append_ordinary_face_samples(geometry, face);
         }
 
         geometry.valid = true;

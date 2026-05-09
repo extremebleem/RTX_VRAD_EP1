@@ -30,7 +30,6 @@
     <ClInclude Include="core\lighting\direct_lighting.h" />
     <ClInclude Include="core\scene\scene_builder.h" />
     <ClInclude Include="core\tracing\trace.h" />
-    <ClInclude Include="vrad_face_geometry.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="silkrad.cpp" />

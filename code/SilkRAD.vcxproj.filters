@@ -39,9 +39,6 @@
     <ClInclude Include="raytracer_optix.h">
       <Filter>optix tracer</Filter>
     </ClInclude>
-    <ClInclude Include="vrad_face_geometry.h">
-      <Filter>headers</Filter>
-    </ClInclude>
     <ClInclude Include="core\state.h">
       <Filter>core</Filter>
     </ClInclude>
