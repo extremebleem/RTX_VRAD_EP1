@@ -6,7 +6,7 @@
 #include "../common/math.h"
 #include "../common/types.h"
 
-namespace SilkRAD::V2::Geometry {
+namespace SilkRAD::Core::Geometry {
     struct FaceGeometry {
         Common::FaceKey key;
         Common::LightmapDimensions lightmap;

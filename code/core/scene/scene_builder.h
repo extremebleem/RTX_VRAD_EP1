@@ -8,7 +8,7 @@
 #include "../geometry/disp_geometry.h"
 #include "../geometry/face_geometry.h"
 
-namespace SilkRAD::V2::Scene {
+namespace SilkRAD::Core::Scene {
     struct SceneBuildOptions {
         std::vector<std::string> assetSearchRoots;
     };

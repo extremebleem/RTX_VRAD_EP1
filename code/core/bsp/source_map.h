@@ -6,7 +6,7 @@
 
 #include "../../bsp.h"
 
-namespace SilkRAD::V2::BSP {
+namespace SilkRAD::Core::BSP {
     class SourceMap {
     public:
         explicit SourceMap(const ::BSP::BSP& bsp);

@@ -4,7 +4,7 @@
 
 #include "types.h"
 
-namespace SilkRAD::V2::Common {
+namespace SilkRAD::Core::Common {
     inline Vec2f make_vec2(float x, float y)
     {
         Vec2f v;

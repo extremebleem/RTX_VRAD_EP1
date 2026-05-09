@@ -13,6 +13,9 @@ namespace OptixRT {
         float3 v2;
         uint32_t sourceId = 0;
         uint32_t role = 0;
+        uint32_t sourceKind = 0;
+        int32_t surfaceFlags = 0;
+        int32_t contents = 0;
         uint32_t visibilityMask = 0xff;
     };
 

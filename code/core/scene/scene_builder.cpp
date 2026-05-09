@@ -13,7 +13,7 @@
 
 #include "../../geometry_rules.h"
 
-namespace SilkRAD::V2::Scene {
+namespace SilkRAD::Core::Scene {
     namespace {
         struct StaticPropTriangle {
             Common::Vec3f v0;
@@ -209,7 +209,10 @@ namespace SilkRAD::V2::Scene {
             Common::Vec3f b,
             Common::Vec3f c,
             uint32_t sourceId,
-            uint32_t role
+            uint32_t role,
+            Common::OccluderTriangle::SourceKind sourceKind,
+            int32_t surfaceFlags,
+            int32_t contents
         )
         {
             Common::OccluderTriangle tri;
@@ -218,6 +221,9 @@ namespace SilkRAD::V2::Scene {
             tri.v2 = c;
             tri.sourceId = sourceId;
             tri.role = role;
+            tri.sourceKind = sourceKind;
+            tri.surfaceFlags = surfaceFlags;
+            tri.contents = contents;
             return tri;
         }
 
@@ -832,7 +838,10 @@ namespace SilkRAD::V2::Scene {
                         b,
                         c,
                         0xffffffffu,
-                        GeometryRules::RTX_ROLE_OCCLUDER
+                        GeometryRules::RTX_ROLE_OCCLUDER,
+                        Common::OccluderTriangle::SourceKind::Brush,
+                        surfaceFlags,
+                        brush.contents
                     ));
                     }
                 }
@@ -882,7 +891,10 @@ namespace SilkRAD::V2::Scene {
                         tv1,
                         tv2,
                         0xffffffffu,
-                        GeometryRules::RTX_ROLE_OCCLUDER | GeometryRules::RTX_ROLE_STATIC_PROP
+                        GeometryRules::RTX_ROLE_OCCLUDER | GeometryRules::RTX_ROLE_STATIC_PROP,
+                        Common::OccluderTriangle::SourceKind::StaticProp,
+                        0,
+                        ::BSP::CONTENTS_SOLID | ::BSP::CONTENTS_MOVEABLE | ::BSP::CONTENTS_OPAQUE
                     ));
                 }
             }
@@ -906,7 +918,7 @@ namespace SilkRAD::V2::Scene {
             }
 
             const Geometry::FaceGeometry& geometry = faceGeometry[faceIndex];
-            if (!geometry.valid || geometry.isDisplacement) {
+            if (geometry.isDisplacement) {
                 continue;
             }
 
@@ -919,8 +931,16 @@ namespace SilkRAD::V2::Scene {
                 continue;
             }
 
+            if (!geometry.valid && !(role & GeometryRules::RTX_ROLE_SKY)) {
+                continue;
+            }
+
+            const Common::Vec3f modelOrigin = geometry.valid
+                ? geometry.modelOrigin
+                : Geometry::face_model_origin(sourceMap, faceIndex);
+
             const std::vector<Common::Vec3f> winding =
-                Geometry::face_world_winding(sourceMap, faceIndex, geometry.modelOrigin);
+                Geometry::face_world_winding(sourceMap, faceIndex, modelOrigin);
             if (winding.size() < 3) {
                 continue;
             }
@@ -931,7 +951,10 @@ namespace SilkRAD::V2::Scene {
                     winding[i],
                     winding[i + 1],
                     static_cast<uint32_t>(faceIndex),
-                    role
+                    role,
+                    Common::OccluderTriangle::SourceKind::Face,
+                    flags,
+                    0
                 ));
             }
         }
@@ -967,14 +990,20 @@ namespace SilkRAD::V2::Scene {
                             geometry.surfaceVertices[i01].pos,
                             geometry.surfaceVertices[i10].pos,
                             static_cast<uint32_t>(faceIndex),
-                            role
+                            role,
+                            Common::OccluderTriangle::SourceKind::Displacement,
+                            flags,
+                            0
                         ));
                         result.displacementTriangles.push_back(make_triangle(
                             geometry.surfaceVertices[i01].pos,
                             geometry.surfaceVertices[i11].pos,
                             geometry.surfaceVertices[i10].pos,
                             static_cast<uint32_t>(faceIndex),
-                            role
+                            role,
+                            Common::OccluderTriangle::SourceKind::Displacement,
+                            flags,
+                            0
                         ));
                     }
                     else {
@@ -983,14 +1012,20 @@ namespace SilkRAD::V2::Scene {
                             geometry.surfaceVertices[i01].pos,
                             geometry.surfaceVertices[i11].pos,
                             static_cast<uint32_t>(faceIndex),
-                            role
+                            role,
+                            Common::OccluderTriangle::SourceKind::Displacement,
+                            flags,
+                            0
                         ));
                         result.displacementTriangles.push_back(make_triangle(
                             geometry.surfaceVertices[i00].pos,
                             geometry.surfaceVertices[i11].pos,
                             geometry.surfaceVertices[i10].pos,
                             static_cast<uint32_t>(faceIndex),
-                            role
+                            role,
+                            Common::OccluderTriangle::SourceKind::Displacement,
+                            flags,
+                            0
                         ));
                     }
                 }

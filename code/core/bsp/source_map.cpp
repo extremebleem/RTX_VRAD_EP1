@@ -2,7 +2,7 @@
 
 #include <stdexcept>
 
-namespace SilkRAD::V2::BSP {
+namespace SilkRAD::Core::BSP {
     SourceMap::SourceMap(const ::BSP::BSP& bsp)
         : m_bsp(&bsp)
     {

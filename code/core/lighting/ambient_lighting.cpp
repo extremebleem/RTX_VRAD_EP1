@@ -9,10 +9,11 @@
 #include <vector>
 
 #include "../../cudautils.h"
-#include "../bridge/backend.h"
+#include "../state.h"
 #include "../common/math.h"
+#include "../tracing/trace.h"
 
-namespace SilkRAD::V2::Lighting {
+namespace SilkRAD::Core::Lighting {
     namespace {
         static constexpr size_t NUM_VERTEX_NORMALS = 162;
         static constexpr float HOST_RAY_TMIN = 0.001f;
@@ -318,7 +319,7 @@ namespace SilkRAD::V2::Lighting {
 
         float3 compute_lightmap_color_displacement(
             const ::BSP::BSP& bsp,
-            const Bridge::BackendState& state,
+            const RuntimeState& state,
             const std::vector<float3>& lightSamples,
             const std::vector<float3>& faceAverages,
             size_t faceIndex,
@@ -445,7 +446,7 @@ namespace SilkRAD::V2::Lighting {
         }
 
         void build_ambient_world(
-            const Bridge::BackendState& state,
+            const RuntimeState& state,
             std::vector<OptixRT::Triangle>& ambientTriangles
         )
         {
@@ -476,7 +477,7 @@ namespace SilkRAD::V2::Lighting {
 
         float3 calc_ray_ambient_lighting(
             const ::BSP::BSP& bsp,
-            const Bridge::BackendState& state,
+            const RuntimeState& state,
             const std::vector<float3>& lightSamples,
             const std::vector<float3>& faceAverages,
             const std::vector<OptixRT::Triangle>& triangles,
@@ -489,17 +490,18 @@ namespace SilkRAD::V2::Lighting {
                 return make_float3();
             }
 
-            const OptixRT::Triangle& hitTriangle = triangles[hit.primitiveIndex];
-            if ((hitTriangle.role & RTX_ROLE_SKY) != 0) {
+            const Tracing::SurfaceTraceResult surfaceTrace =
+                Tracing::test_line_surface(hit, triangles);
+            if (surfaceTrace.hitSky) {
                 return skyAmbient;
             }
 
-            if (hitTriangle.sourceId == INVALID_SOURCE_FACE
-                || hitTriangle.sourceId >= faceAverages.size()) {
+            if (surfaceTrace.sourceId == INVALID_SOURCE_FACE
+                || surfaceTrace.sourceId >= faceAverages.size()) {
                 return make_float3();
             }
 
-            const size_t faceIndex = hitTriangle.sourceId;
+            const size_t faceIndex = surfaceTrace.sourceId;
             const Common::Vec3f hitPoint = from_float3(ray.origin + ray.direction * hit.t);
 
             if (faceIndex < state.dispGeometry.size() && state.dispGeometry[faceIndex].valid) {
@@ -556,7 +558,7 @@ namespace SilkRAD::V2::Lighting {
     void compute_leaf_ambient_from_cuda_runtime(
         const ::BSP::BSP& bsp,
         ::CUDABSP::CUDABSP* pCudaBSP,
-        const Bridge::BackendState& state,
+        const RuntimeState& state,
         OptixRT::OptixSunLosTracer& tracer
     )
     {
@@ -631,7 +633,7 @@ namespace SilkRAD::V2::Lighting {
 
     void compute_leaf_ambient_runtime(
         const ::BSP::BSP& bsp,
-        const Bridge::BackendState& state,
+        const RuntimeState& state,
         const std::vector<float3>& lightSamples,
         const std::vector<float3>& faceAverages,
         std::vector<::BSP::CompressedLightCube>& leafAmbient,
@@ -701,7 +703,7 @@ namespace SilkRAD::V2::Lighting {
         }
 
         std::cout << "Tracing " << ambientRays.size()
-            << " v2 leaf ambient spherical rays..." << std::endl;
+            << " core leaf ambient spherical rays..." << std::endl;
 
         std::vector<OptixRT::RayHit> ambientHits;
         tracer.trace_batch(ambientRays, ambientHits);
@@ -788,7 +790,7 @@ namespace SilkRAD::V2::Lighting {
         }
 
         std::cout << "Tracing " << emitRays.size()
-            << " v2 leaf ambient emit-surface rays..." << std::endl;
+            << " core leaf ambient emit-surface rays..." << std::endl;
 
         std::vector<OptixRT::RayHit> emitHits;
         tracer.trace_batch(emitRays, emitHits);

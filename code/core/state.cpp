@@ -1,12 +1,12 @@
-#include "backend.h"
+#include "state.h"
 
-namespace SilkRAD::V2::Bridge {
-    BackendState build_backend_state(
+namespace SilkRAD::Core {
+    RuntimeState build_runtime_state(
         const BSP::SourceMap& sourceMap,
         const BuildOptions& options
     )
     {
-        BackendState state;
+        RuntimeState state;
         state.faceGeometry.resize(sourceMap.face_count());
         state.dispGeometry.resize(sourceMap.face_count());
 

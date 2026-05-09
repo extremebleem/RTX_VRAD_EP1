@@ -7,7 +7,7 @@
     <Filter Include="optix tracer">
       <UniqueIdentifier>{5554ad9c-0a69-4ad9-89a8-e32b461f2bee}</UniqueIdentifier>
     </Filter>
-    <Filter Include="v2">
+    <Filter Include="core">
       <UniqueIdentifier>{e15e07bc-b27a-45b0-a9a6-e3c208f5b022}</UniqueIdentifier>
     </Filter>
   </ItemGroup>
@@ -42,32 +42,35 @@
     <ClInclude Include="vrad_face_geometry.h">
       <Filter>headers</Filter>
     </ClInclude>
-    <ClInclude Include="v2\bridge\backend.h">
-      <Filter>v2</Filter>
+    <ClInclude Include="core\state.h">
+      <Filter>core</Filter>
     </ClInclude>
-    <ClInclude Include="v2\bsp\source_map.h">
-      <Filter>v2</Filter>
+    <ClInclude Include="core\bsp\source_map.h">
+      <Filter>core</Filter>
     </ClInclude>
-    <ClInclude Include="v2\common\math.h">
-      <Filter>v2</Filter>
+    <ClInclude Include="core\common\math.h">
+      <Filter>core</Filter>
     </ClInclude>
-    <ClInclude Include="v2\common\types.h">
-      <Filter>v2</Filter>
+    <ClInclude Include="core\common\types.h">
+      <Filter>core</Filter>
     </ClInclude>
-    <ClInclude Include="v2\geometry\disp_geometry.h">
-      <Filter>v2</Filter>
+    <ClInclude Include="core\geometry\disp_geometry.h">
+      <Filter>core</Filter>
     </ClInclude>
-    <ClInclude Include="v2\geometry\face_geometry.h">
-      <Filter>v2</Filter>
+    <ClInclude Include="core\geometry\face_geometry.h">
+      <Filter>core</Filter>
     </ClInclude>
-    <ClInclude Include="v2\lighting\ambient_lighting.h">
-      <Filter>v2</Filter>
+    <ClInclude Include="core\lighting\ambient_lighting.h">
+      <Filter>core</Filter>
     </ClInclude>
-    <ClInclude Include="v2\lighting\direct_lighting.h">
-      <Filter>v2</Filter>
+    <ClInclude Include="core\lighting\direct_lighting.h">
+      <Filter>core</Filter>
     </ClInclude>
-    <ClInclude Include="v2\scene\scene_builder.h">
-      <Filter>v2</Filter>
+    <ClInclude Include="core\scene\scene_builder.h">
+      <Filter>core</Filter>
+    </ClInclude>
+    <ClInclude Include="core\tracing\trace.h">
+      <Filter>core</Filter>
     </ClInclude>
   </ItemGroup>
   <ItemGroup>
@@ -76,26 +79,29 @@
     <ClCompile Include="raytracer_optix.cpp">
       <Filter>optix tracer</Filter>
     </ClCompile>
-    <ClCompile Include="v2\bridge\backend.cpp">
-      <Filter>v2</Filter>
+    <ClCompile Include="core\state.cpp">
+      <Filter>core</Filter>
     </ClCompile>
-    <ClCompile Include="v2\bsp\source_map.cpp">
-      <Filter>v2</Filter>
+    <ClCompile Include="core\bsp\source_map.cpp">
+      <Filter>core</Filter>
     </ClCompile>
-    <ClCompile Include="v2\geometry\disp_geometry.cpp">
-      <Filter>v2</Filter>
+    <ClCompile Include="core\geometry\disp_geometry.cpp">
+      <Filter>core</Filter>
     </ClCompile>
-    <ClCompile Include="v2\geometry\face_geometry.cpp">
-      <Filter>v2</Filter>
+    <ClCompile Include="core\geometry\face_geometry.cpp">
+      <Filter>core</Filter>
     </ClCompile>
-    <ClCompile Include="v2\lighting\ambient_lighting.cpp">
-      <Filter>v2</Filter>
+    <ClCompile Include="core\lighting\ambient_lighting.cpp">
+      <Filter>core</Filter>
     </ClCompile>
-    <ClCompile Include="v2\lighting\direct_lighting.cpp">
-      <Filter>v2</Filter>
+    <ClCompile Include="core\lighting\direct_lighting.cpp">
+      <Filter>core</Filter>
     </ClCompile>
-    <ClCompile Include="v2\scene\scene_builder.cpp">
-      <Filter>v2</Filter>
+    <ClCompile Include="core\scene\scene_builder.cpp">
+      <Filter>core</Filter>
+    </ClCompile>
+    <ClCompile Include="core\tracing\trace.cpp">
+      <Filter>core</Filter>
     </ClCompile>
   </ItemGroup>
   <ItemGroup>

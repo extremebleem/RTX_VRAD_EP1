@@ -4,7 +4,7 @@
 #include <cstdint>
 #include <vector>
 
-namespace SilkRAD::V2::Common {
+namespace SilkRAD::Core::Common {
     struct Vec2f {
         float x = 0.0f;
         float y = 0.0f;
@@ -41,6 +41,8 @@ namespace SilkRAD::V2::Common {
         Vec2f coord;
         Vec2f mins;
         Vec2f maxs;
+        std::vector<Vec2f> polygon;
+        std::vector<Vec3f> worldPolygon;
         Vec3f pos;
         Vec3f normal;
         float area = 0.0f;

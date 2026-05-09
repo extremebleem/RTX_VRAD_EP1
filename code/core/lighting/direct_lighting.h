@@ -10,11 +10,11 @@
 #include "../geometry/face_geometry.h"
 #include "../scene/scene_builder.h"
 
-namespace SilkRAD::V2::Bridge {
-    struct BackendState;
+namespace SilkRAD::Core {
+    struct RuntimeState;
 }
 
-namespace SilkRAD::V2::Lighting {
+namespace SilkRAD::Core::Lighting {
     struct DirectLightingResult {
         size_t ordinaryFaceCount = 0;
         size_t displacementFaceCount = 0;
@@ -31,14 +31,14 @@ namespace SilkRAD::V2::Lighting {
     );
 
     void build_runtime_world(
-        const Bridge::BackendState& state,
+        const RuntimeState& state,
         std::vector<OptixRT::Triangle>& outTriangles
     );
 
     void compute_direct_lighting_runtime(
         ::BSP::BSP& bsp,
         ::CUDABSP::CUDABSP* pCudaBSP,
-        const Bridge::BackendState& state,
+        const RuntimeState& state,
         const std::vector<OptixRT::Triangle>& triangles,
         OptixRT::OptixSunLosTracer& tracer
     );

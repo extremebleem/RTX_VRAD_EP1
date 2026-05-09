@@ -11,10 +11,11 @@
 #include <vector>
 
 #include "../../cudautils.h"
-#include "../bridge/backend.h"
+#include "../state.h"
 #include "../common/math.h"
+#include "../tracing/trace.h"
 
-namespace SilkRAD::V2::Lighting {
+namespace SilkRAD::Core::Lighting {
     namespace {
         static constexpr uint32_t RTX_ROLE_SKY = 1u << 2;
         static constexpr size_t HOST_SKY_AMBIENT_SAMPLES = 16;
@@ -175,18 +176,6 @@ namespace SilkRAD::V2::Lighting {
             return ambient_direction(n, sampleIndex % HOST_SKY_AMBIENT_SAMPLES);
         }
 
-        float3 soft_sun_direction(float3 sunDir, size_t sampleIndex)
-        {
-            const float2 aperture = luxel_subsample_offset(sampleIndex);
-            const float3 tangent = make_tangent(sunDir);
-            const float3 bitangent = make_bitangent(sunDir, tangent);
-            return safe_normalized(
-                sunDir
-                + tangent * (aperture.x * HOST_SUN_ANGULAR_RADIUS)
-                + bitangent * (aperture.y * HOST_SUN_ANGULAR_RADIUS)
-            );
-        }
-
         uint32_t hit_role(
             const std::vector<OptixRT::Triangle>& triangles,
             const OptixRT::RayHit& hit
@@ -217,6 +206,41 @@ namespace SilkRAD::V2::Lighting {
             }
 
             return make_float3(bsp.get_texdatas()[texInfo.texData].reflectivity);
+        }
+
+        bool point_in_winding_world(
+            const std::vector<Common::Vec3f>& polygon,
+            float3 point,
+            float3 normal
+        )
+        {
+            if (polygon.size() < 3) {
+                return true;
+            }
+
+            float sign = 0.0f;
+            for (size_t i = 0; i < polygon.size(); ++i) {
+                const Common::Vec3f& a = polygon[i];
+                const Common::Vec3f& b = polygon[(i + 1) % polygon.size()];
+                const float3 av = make_float3(a.x, a.y, a.z);
+                const float3 bv = make_float3(b.x, b.y, b.z);
+                const float3 edge = bv - av;
+                const float3 toPoint = point - av;
+                const float edgeSign = dot(cross(edge, toPoint), normal);
+
+                if (std::fabs(edgeSign) <= 1e-5f) {
+                    continue;
+                }
+
+                if (sign == 0.0f) {
+                    sign = edgeSign;
+                }
+                else if ((sign > 0.0f && edgeSign < 0.0f) || (sign < 0.0f && edgeSign > 0.0f)) {
+                    return false;
+                }
+            }
+
+            return true;
         }
 
         bool leaf_receives_ambient(const ::BSP::DLeaf& leaf)
@@ -269,7 +293,7 @@ namespace SilkRAD::V2::Lighting {
         }
 
         bool v2_receiver_sample(
-            const Bridge::BackendState& state,
+            const RuntimeState& state,
             size_t faceIndex,
             size_t s,
             size_t t,
@@ -290,22 +314,28 @@ namespace SilkRAD::V2::Lighting {
                 }
 
                 const Common::ReceiverSample& sample = dispGeometry.samples[sampleIndex];
-                const float fu = 0.5f + sampleOffset.x;
-                const float fv = 0.5f + sampleOffset.y;
-                const float u = sample.mins.x + (sample.maxs.x - sample.mins.x) * fu;
-                const float v = sample.mins.y + (sample.maxs.y - sample.mins.y) * fv;
-
                 Common::Vec3f pos;
                 Common::Vec3f normal;
-                if (!Geometry::disp_uv_to_surf_point(dispGeometry, u, v, 1.0f, pos)) {
+                if (!Geometry::disp_uv_to_surf_point(
+                    dispGeometry,
+                    sample.coord.x,
+                    sample.coord.y,
+                    1.0f,
+                    pos
+                )) {
                     return false;
                 }
-                if (!Geometry::disp_uv_to_surf_normal(dispGeometry, u, v, normal)) {
+                if (!Geometry::disp_uv_to_surf_normal(
+                    dispGeometry,
+                    sample.coord.x,
+                    sample.coord.y,
+                    normal
+                )) {
                     normal = sample.normal;
                 }
 
-                outPos = to_float3(pos);
                 outNormal = safe_normalized(to_float3(normal));
+                outPos = to_float3(pos) + outNormal * HOST_RAY_BIAS;
                 return is_finite(outPos) && is_finite(outNormal);
             }
 
@@ -320,10 +350,8 @@ namespace SilkRAD::V2::Lighting {
             }
 
             const Common::ReceiverSample& sample = faceGeometry.samples.values[sampleIndex];
-            const float fu = 0.5f + sampleOffset.x;
-            const float fv = 0.5f + sampleOffset.y;
-            const float ss = sample.mins.x + (sample.maxs.x - sample.mins.x) * fu;
-            const float tt = sample.mins.y + (sample.maxs.y - sample.mins.y) * fv;
+            const float ss = sample.coord.x + sampleOffset.x;
+            const float tt = sample.coord.y + sampleOffset.y;
 
             outNormal = safe_normalized(to_float3(sample.normal));
             const float ds = ss - sample.coord.x;
@@ -370,7 +398,7 @@ namespace SilkRAD::V2::Lighting {
     }
 
     void build_runtime_world(
-        const Bridge::BackendState& state,
+        const RuntimeState& state,
         std::vector<OptixRT::Triangle>& outTriangles
     )
     {
@@ -392,6 +420,9 @@ namespace SilkRAD::V2::Lighting {
                 tri.v2 = to_float3(triIn.v2);
                 tri.sourceId = triIn.sourceId;
                 tri.role = triIn.role;
+                tri.sourceKind = static_cast<uint32_t>(triIn.sourceKind);
+                tri.surfaceFlags = triIn.surfaceFlags;
+                tri.contents = triIn.contents;
                 tri.visibilityMask = 0xff;
                 outTriangles.push_back(tri);
             }
@@ -406,7 +437,7 @@ namespace SilkRAD::V2::Lighting {
     void compute_direct_lighting_runtime(
         ::BSP::BSP& bsp,
         ::CUDABSP::CUDABSP* pCudaBSP,
-        const Bridge::BackendState& state,
+        const RuntimeState& state,
         const std::vector<OptixRT::Triangle>& triangles,
         OptixRT::OptixSunLosTracer& tracer
     )
@@ -422,6 +453,11 @@ namespace SilkRAD::V2::Lighting {
             size_t lightmapIndex;
             float3 color;
             DirectVisibilityMode visibilityMode;
+        };
+
+        struct SampleNormalization {
+            size_t lightmapIndex;
+            size_t validSubsamples;
         };
 
         struct GiRayContribution {
@@ -447,11 +483,12 @@ namespace SilkRAD::V2::Lighting {
         std::vector<::BSP::DFace> dFaces = bsp.get_dfaces();
         std::vector<OptixRT::SunRay> rays;
         std::vector<RayContribution> contributions;
+        std::vector<SampleNormalization> sampleNormalizations;
 
         const size_t numFaces = bsp.get_faces().size();
         size_t processedFaces = 0;
 
-        std::cout << "Building v2 OptiX direct-lighting ray batch for "
+        std::cout << "Building core OptiX direct-lighting ray batch for "
             << numFaces << " faces at " << HOST_DIRECT_SUBSAMPLES
             << " spp/luxel..." << std::endl;
 
@@ -466,8 +503,9 @@ namespace SilkRAD::V2::Lighting {
 
             const Geometry::DispGeometry& dispGeometry = state.dispGeometry[faceIndex];
             const Geometry::FaceGeometry& faceGeometry = state.faceGeometry[faceIndex];
-            const bool validReceiver =
-                dispGeometry.valid || (faceGeometry.valid && !faceGeometry.isDisplacement);
+            const bool isDispReceiver = dispGeometry.valid;
+            const bool isFaceReceiver = faceGeometry.valid && !faceGeometry.isDisplacement;
+            const bool validReceiver = isDispReceiver || isFaceReceiver;
             if (!validReceiver) {
                 ++processedFaces;
                 continue;
@@ -482,10 +520,12 @@ namespace SilkRAD::V2::Lighting {
                 for (size_t s = 0; s < lightmapWidth; ++s) {
                     const size_t sampleIndex = t * lightmapWidth + s;
                     const size_t lightmapIndex = lightmapStartIndex + sampleIndex;
-                    const float subSampleWeight =
-                        1.0f / static_cast<float>(HOST_DIRECT_SUBSAMPLES);
+                    const size_t subSampleCount = isFaceReceiver
+                        ? HOST_DIRECT_SUBSAMPLES
+                        : 1;
+                    size_t validSubsamples = 0;
 
-                    for (size_t directSample = 0; directSample < HOST_DIRECT_SUBSAMPLES; ++directSample) {
+                    for (size_t directSample = 0; directSample < subSampleCount; ++directSample) {
                         const float2 sampleOffset = luxel_subsample_offset(directSample);
                         float3 samplePos;
                         float3 sampleNormal;
@@ -500,6 +540,7 @@ namespace SilkRAD::V2::Lighting {
                         )) {
                             continue;
                         }
+                        ++validSubsamples;
 
                         const ::BSP::Vec3<float> sampleVec{
                             samplePos.x,
@@ -516,7 +557,7 @@ namespace SilkRAD::V2::Lighting {
                             if (light.type == ::BSP::EMIT_SKYLIGHT) {
                                 const float3 lightNormal = make_float3(light.normal);
                                 const float3 sunDir =
-                                    soft_sun_direction(safe_normalized(lightNormal) * -1.0f, directSample);
+                                    safe_normalized(lightNormal) * -1.0f;
                                 const float ndotl = dot(sampleNormal, sunDir);
                                 if (ndotl <= 0.0f || !is_finite(sunDir)) {
                                     continue;
@@ -535,7 +576,7 @@ namespace SilkRAD::V2::Lighting {
                                 rays.push_back(ray);
                                 contributions.push_back(RayContribution{
                                     lightmapIndex,
-                                    make_float3(light.intensity) * ndotl * 255.0f * subSampleWeight,
+                                    make_float3(light.intensity) * ndotl * 255.0f,
                                     DirectVisibilityMode::SkyFirst,
                                 });
                                 continue;
@@ -602,7 +643,7 @@ namespace SilkRAD::V2::Lighting {
                             float3 lightContribution = make_float3(light.intensity);
                             lightContribution *=
                                 penumbraScale * 255.0f
-                                * subSampleWeight / attenuation;
+                                / attenuation;
 
                             OptixRT::SunRay ray{};
                             ray.origin = shadowStart;
@@ -622,6 +663,13 @@ namespace SilkRAD::V2::Lighting {
                             });
                         }
                     }
+
+                    if (validSubsamples > 0) {
+                        sampleNormalizations.push_back(SampleNormalization{
+                            lightmapIndex,
+                            validSubsamples,
+                        });
+                    }
                 }
             }
 
@@ -633,22 +681,33 @@ namespace SilkRAD::V2::Lighting {
         }
 
         std::cout << "Tracing " << rays.size()
-            << " v2 direct-lighting rays with OptiX..." << std::endl;
+            << " core direct-lighting rays with OptiX..." << std::endl;
 
         std::vector<OptixRT::RayHit> directHits;
         tracer.trace_batch(rays, directHits);
 
         for (size_t i = 0; i < contributions.size(); ++i) {
-            const uint32_t currentHitRole = hit_role(triangles, directHits[i]);
             const RayContribution& contribution = contributions[i];
+            const Tracing::LineTraceResult lineTrace =
+                Tracing::test_line(directHits[i], triangles);
+            const Tracing::SurfaceTraceResult surfaceTrace =
+                Tracing::test_line_surface(directHits[i], triangles);
             const bool visible =
                 contribution.visibilityMode == DirectVisibilityMode::SkyFirst
-                    ? ((currentHitRole & RTX_ROLE_SKY) != 0)
-                    : (!directHits[i].hit || (currentHitRole & RTX_ROLE_SKY) != 0);
+                    ? (surfaceTrace.hit && surfaceTrace.hitSky)
+                    : (!lineTrace.hit || surfaceTrace.hitSky);
 
             if (visible) {
                 lightSamples[contribution.lightmapIndex] += contribution.color;
             }
+        }
+
+        for (const SampleNormalization& normalization : sampleNormalizations) {
+            if (normalization.validSubsamples == 0) {
+                continue;
+            }
+            lightSamples[normalization.lightmapIndex] *=
+                (1.0f / static_cast<float>(normalization.validSubsamples));
         }
 
         std::vector<float3> faceAverages(numFaces, make_float3());

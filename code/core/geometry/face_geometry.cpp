@@ -3,7 +3,7 @@
 #include <algorithm>
 #include <cmath>
 
-namespace SilkRAD::V2::Geometry {
+namespace SilkRAD::Core::Geometry {
     namespace {
         bool vec3_equal(
             const ::BSP::Vec3<float>& a,
@@ -557,6 +557,7 @@ namespace SilkRAD::V2::Geometry {
                     sample.coord = center;
                     sample.mins = mins;
                     sample.maxs = maxs;
+                    sample.polygon = cell;
                     sample.area = area * geometry.worldAreaPerLuxel;
                     sample.pos = luxel_space_to_world(
                         geometry,
@@ -564,6 +565,14 @@ namespace SilkRAD::V2::Geometry {
                         center.y,
                         face
                     );
+                    if (sample.area < geometry.worldAreaPerLuxel - 0.001f) {
+                        sample.worldPolygon.reserve(cell.size());
+                        for (const Common::Vec2f& pt : cell) {
+                            sample.worldPolygon.push_back(
+                                luxel_space_to_world(geometry, pt.x, pt.y, face)
+                            );
+                        }
+                    }
                     sample.normal = geometry.faceNormal;
                     geometry.samples.values.push_back(sample);
                 }

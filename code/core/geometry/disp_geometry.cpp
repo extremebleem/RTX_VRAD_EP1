@@ -6,8 +6,10 @@
 
 #include "face_geometry.h"
 
-namespace SilkRAD::V2::Geometry {
+namespace SilkRAD::Core::Geometry {
     namespace {
+        constexpr float TRIEDGE_EPSILON = 0.001f;
+
         Common::Vec3f from_bsp_vec3(const ::BSP::Vec3<float>& v)
         {
             return Common::make_vec3(v.x, v.y, v.z);
@@ -22,9 +24,18 @@ namespace SilkRAD::V2::Geometry {
             float v
         )
         {
-            const Common::Vec3f pu0 = Common::add(p00, Common::scale(Common::sub(p10, p00), u));
-            const Common::Vec3f pu1 = Common::add(p01, Common::scale(Common::sub(p11, p01), u));
-            return Common::add(pu0, Common::scale(Common::sub(pu1, pu0), v));
+            const Common::Vec3f pu0 = Common::add(
+                p00,
+                Common::scale(Common::sub(p10, p00), u)
+            );
+            const Common::Vec3f pu1 = Common::add(
+                p01,
+                Common::scale(Common::sub(p11, p01), u)
+            );
+            return Common::add(
+                pu0,
+                Common::scale(Common::sub(pu1, pu0), v)
+            );
         }
 
         size_t disp_index(const DispGeometry& geometry, size_t x, size_t y)
@@ -32,22 +43,35 @@ namespace SilkRAD::V2::Geometry {
             return y * geometry.gridSize + x;
         }
 
-        size_t closest_corner_index(
-            const std::vector<Common::Vec3f>& corners,
-            Common::Vec3f point
+        size_t find_surf_point_start_index(
+            const std::vector<Common::Vec3f>& points,
+            Common::Vec3f pointStart
         )
         {
-            size_t bestIndex = 0;
-            float bestDist2 = std::numeric_limits<float>::max();
-            for (size_t i = 0; i < corners.size(); ++i) {
-                const Common::Vec3f d = Common::sub(corners[i], point);
-                const float dist2 = Common::dot(d, d);
-                if (dist2 < bestDist2) {
-                    bestDist2 = dist2;
-                    bestIndex = i;
+            size_t minIndex = 0;
+            float minDistance = std::numeric_limits<float>::max();
+
+            for (size_t i = 0; i < points.size(); ++i) {
+                const Common::Vec3f segment = Common::sub(pointStart, points[i]);
+                const float distanceSq = Common::dot(segment, segment);
+                if (distanceSq < minDistance) {
+                    minDistance = distanceSq;
+                    minIndex = i;
                 }
             }
-            return bestIndex;
+
+            return minIndex;
+        }
+
+        void adjust_surf_point_data(
+            std::vector<Common::Vec3f>& points,
+            size_t pointStartIndex
+        )
+        {
+            std::vector<Common::Vec3f> tmpPoints = points;
+            for (size_t i = 0; i < points.size(); ++i) {
+                points[i] = tmpPoints[(i + pointStartIndex) % points.size()];
+            }
         }
 
         void orient_normal(Common::Vec3f faceNormal, Common::Vec3f& normal)
@@ -55,6 +79,114 @@ namespace SilkRAD::V2::Geometry {
             if (Common::dot(normal, faceNormal) < 0.0f) {
                 normal = Common::scale(normal, -1.0f);
             }
+        }
+
+        bool does_edge_exist(size_t indexRow, size_t indexCol, int direction, size_t postSpacing)
+        {
+            switch (direction) {
+            case 0:
+                return indexRow > 0;
+            case 1:
+                return (indexCol + 1) < postSpacing;
+            case 2:
+                return (indexRow + 1) < postSpacing;
+            case 3:
+                return indexCol > 0;
+            default:
+                return false;
+            }
+        }
+
+        Common::Vec3f calc_normal_from_edges(
+            const DispGeometry& geometry,
+            size_t indexRow,
+            size_t indexCol
+        )
+        {
+            const size_t postSpacing = geometry.gridSize;
+            Common::Vec3f accumNormal = Common::make_vec3(0.0f, 0.0f, 0.0f);
+            int normalCount = 0;
+
+            auto at = [&](size_t col, size_t row) -> const Common::Vec3f& {
+                return geometry.surfaceVertices[col * postSpacing + row].pos;
+            };
+
+            const bool edge0 = does_edge_exist(indexRow, indexCol, 0, postSpacing);
+            const bool edge1 = does_edge_exist(indexRow, indexCol, 1, postSpacing);
+            const bool edge2 = does_edge_exist(indexRow, indexCol, 2, postSpacing);
+            const bool edge3 = does_edge_exist(indexRow, indexCol, 3, postSpacing);
+
+            Common::Vec3f tmpVect0;
+            Common::Vec3f tmpVect1;
+            Common::Vec3f tmpNormal;
+
+            if (edge1 && edge2) {
+                tmpVect0 = Common::sub(at(indexCol + 1, indexRow), at(indexCol, indexRow));
+                tmpVect1 = Common::sub(at(indexCol, indexRow + 1), at(indexCol, indexRow));
+                tmpNormal = Common::normalized(Common::cross(tmpVect1, tmpVect0));
+                accumNormal = Common::add(accumNormal, tmpNormal);
+                ++normalCount;
+
+                tmpVect0 = Common::sub(at(indexCol + 1, indexRow), at(indexCol, indexRow + 1));
+                tmpVect1 = Common::sub(at(indexCol + 1, indexRow + 1), at(indexCol, indexRow + 1));
+                tmpNormal = Common::normalized(Common::cross(tmpVect1, tmpVect0));
+                accumNormal = Common::add(accumNormal, tmpNormal);
+                ++normalCount;
+            }
+
+            if (edge0 && edge1) {
+                tmpVect0 = Common::sub(at(indexCol + 1, indexRow - 1), at(indexCol, indexRow - 1));
+                tmpVect1 = Common::sub(at(indexCol, indexRow), at(indexCol, indexRow - 1));
+                tmpNormal = Common::normalized(Common::cross(tmpVect1, tmpVect0));
+                accumNormal = Common::add(accumNormal, tmpNormal);
+                ++normalCount;
+
+                tmpVect0 = Common::sub(at(indexCol + 1, indexRow - 1), at(indexCol, indexRow));
+                tmpVect1 = Common::sub(at(indexCol + 1, indexRow), at(indexCol, indexRow));
+                tmpNormal = Common::normalized(Common::cross(tmpVect1, tmpVect0));
+                accumNormal = Common::add(accumNormal, tmpNormal);
+                ++normalCount;
+            }
+
+            if (edge0 && edge3) {
+                tmpVect0 = Common::sub(at(indexCol, indexRow - 1), at(indexCol - 1, indexRow - 1));
+                tmpVect1 = Common::sub(at(indexCol - 1, indexRow), at(indexCol - 1, indexRow - 1));
+                tmpNormal = Common::normalized(Common::cross(tmpVect1, tmpVect0));
+                accumNormal = Common::add(accumNormal, tmpNormal);
+                ++normalCount;
+
+                tmpVect0 = Common::sub(at(indexCol, indexRow - 1), at(indexCol - 1, indexRow));
+                tmpVect1 = Common::sub(at(indexCol, indexRow), at(indexCol - 1, indexRow));
+                tmpNormal = Common::normalized(Common::cross(tmpVect1, tmpVect0));
+                accumNormal = Common::add(accumNormal, tmpNormal);
+                ++normalCount;
+            }
+
+            if (edge2 && edge3) {
+                tmpVect0 = Common::sub(at(indexCol, indexRow), at(indexCol - 1, indexRow));
+                tmpVect1 = Common::sub(at(indexCol - 1, indexRow + 1), at(indexCol - 1, indexRow));
+                tmpNormal = Common::normalized(Common::cross(tmpVect1, tmpVect0));
+                accumNormal = Common::add(accumNormal, tmpNormal);
+                ++normalCount;
+
+                tmpVect0 = Common::sub(at(indexCol, indexRow), at(indexCol - 1, indexRow + 1));
+                tmpVect1 = Common::sub(at(indexCol, indexRow + 1), at(indexCol - 1, indexRow + 1));
+                tmpNormal = Common::normalized(Common::cross(tmpVect1, tmpVect0));
+                accumNormal = Common::add(accumNormal, tmpNormal);
+                ++normalCount;
+            }
+
+            if (normalCount <= 0) {
+                return geometry.faceNormal;
+            }
+
+            Common::Vec3f normal = Common::scale(accumNormal, 1.0f / static_cast<float>(normalCount));
+            normal = Common::normalized(normal);
+            if (!Common::is_finite(normal) || Common::length(normal) <= 1e-6f) {
+                normal = geometry.faceNormal;
+            }
+            orient_normal(geometry.faceNormal, normal);
+            return normal;
         }
 
         bool disp_triangle_vertices(
@@ -290,7 +422,7 @@ namespace SilkRAD::V2::Geometry {
         Common::Vec3f triNormal = geometry.faceNormal;
 
         if (odd) {
-            if ((fracU + fracV) >= 1.0f) {
+            if ((fracU + fracV) >= (1.0f + TRIEDGE_EPSILON)) {
                 const size_t i0 = disp_index(geometry, snapU, nextV);
                 const size_t i1 = disp_index(geometry, nextU, nextV);
                 const size_t i2 = disp_index(geometry, nextU, snapV);
@@ -386,18 +518,33 @@ namespace SilkRAD::V2::Geometry {
         const float fracU = flU - static_cast<float>(snapU);
         const float fracV = flV - static_cast<float>(snapV);
 
-        const size_t i00 = disp_index(geometry, snapU, snapV);
-        const size_t i10 = disp_index(geometry, nextU, snapV);
-        const size_t i11 = disp_index(geometry, nextU, nextV);
-        const size_t i01 = disp_index(geometry, snapU, nextV);
+        const size_t iQuad[4] = {
+            disp_index(geometry, snapU, snapV),
+            disp_index(geometry, snapU, nextV),
+            disp_index(geometry, nextU, nextV),
+            disp_index(geometry, nextU, snapV),
+        };
 
-        Common::Vec3f normal = bilerp(
-            geometry.surfaceVertices[i00].normal,
-            geometry.surfaceVertices[i10].normal,
-            geometry.surfaceVertices[i11].normal,
-            geometry.surfaceVertices[i01].normal,
-            fracU,
-            fracV
+        const Common::Vec3f& n0 = geometry.surfaceVertices[iQuad[0]].normal;
+        const Common::Vec3f& n1 = geometry.surfaceVertices[iQuad[1]].normal;
+        const Common::Vec3f& n2 = geometry.surfaceVertices[iQuad[2]].normal;
+        const Common::Vec3f& n3 = geometry.surfaceVertices[iQuad[3]].normal;
+
+        Common::Vec3f blended0 = Common::add(
+            Common::scale(n0, 1.0f - fracU),
+            Common::scale(n3, fracU)
+        );
+        blended0 = Common::normalized(blended0);
+
+        Common::Vec3f blended1 = Common::add(
+            Common::scale(n1, 1.0f - fracU),
+            Common::scale(n2, fracU)
+        );
+        blended1 = Common::normalized(blended1);
+
+        Common::Vec3f normal = Common::add(
+            Common::scale(blended0, 1.0f - fracV),
+            Common::scale(blended1, fracV)
         );
         normal = Common::normalized(normal);
         if (!Common::is_finite(normal) || Common::length(normal) <= 1e-6f) {
@@ -534,14 +681,17 @@ namespace SilkRAD::V2::Geometry {
             return geometry;
         }
 
-        const size_t startCorner = closest_corner_index(
-            winding,
+        std::vector<Common::Vec3f> surfacePoints = winding;
+        const size_t pointStartIndex = find_surf_point_start_index(
+            surfacePoints,
             from_bsp_vec3(dispInfo->startPosition)
         );
-        const Common::Vec3f p00 = winding[startCorner];
-        const Common::Vec3f p10 = winding[(startCorner + 1) % 4];
-        const Common::Vec3f p11 = winding[(startCorner + 2) % 4];
-        const Common::Vec3f p01 = winding[(startCorner + 3) % 4];
+        adjust_surf_point_data(surfacePoints, pointStartIndex);
+
+        const Common::Vec3f& p00 = surfacePoints[0];
+        const Common::Vec3f& p10 = surfacePoints[1];
+        const Common::Vec3f& p11 = surfacePoints[2];
+        const Common::Vec3f& p01 = surfacePoints[3];
 
         const std::vector<::BSP::DispVert>& dispVerts = sourceMap.dispverts();
         const size_t vertexCount = geometry.gridSize * geometry.gridSize;
@@ -551,68 +701,35 @@ namespace SilkRAD::V2::Geometry {
         }
 
         geometry.surfaceVertices.resize(vertexCount);
-        for (size_t y = 0; y < geometry.gridSize; ++y) {
-            const float v = static_cast<float>(y) / static_cast<float>(geometry.gridSize - 1);
-            for (size_t x = 0; x < geometry.gridSize; ++x) {
-                const float u = static_cast<float>(x) / static_cast<float>(geometry.gridSize - 1);
-                const size_t index = disp_index(geometry, x, y);
+        const float ooInt = 1.0f / static_cast<float>(geometry.gridSize - 1);
+        const Common::Vec3f edgeInt0 = Common::scale(Common::sub(p10, p00), ooInt);
+        const Common::Vec3f edgeInt1 = Common::scale(Common::sub(p11, p01), ooInt);
+
+        for (size_t i = 0; i < geometry.gridSize; ++i) {
+            const Common::Vec3f endPt0 = Common::add(p00, Common::scale(edgeInt0, static_cast<float>(i)));
+            const Common::Vec3f endPt1 = Common::add(p01, Common::scale(edgeInt1, static_cast<float>(i)));
+            const Common::Vec3f seg = Common::sub(endPt1, endPt0);
+            const Common::Vec3f segInt = Common::scale(seg, ooInt);
+
+            for (size_t j = 0; j < geometry.gridSize; ++j) {
+                const size_t index = i * geometry.gridSize + j;
                 const ::BSP::DispVert& dispVert =
                     dispVerts[static_cast<size_t>(dispInfo->dispVertStart) + index];
-                const Common::Vec3f basePos = bilerp(p00, p10, p11, p01, u, v);
+                const Common::Vec3f flatVert = Common::add(
+                    endPt0,
+                    Common::scale(segInt, static_cast<float>(j))
+                );
                 const Common::Vec3f offset = Common::scale(from_bsp_vec3(dispVert.vector), dispVert.dist);
-                geometry.surfaceVertices[index].pos = Common::add(basePos, offset);
+                geometry.surfaceVertices[index].pos = Common::add(flatVert, offset);
                 geometry.surfaceVertices[index].normal = Common::make_vec3(0.0f, 0.0f, 0.0f);
             }
         }
 
-        std::vector<Common::Vec3f> normalSums(vertexCount, Common::make_vec3(0.0f, 0.0f, 0.0f));
-        for (size_t y = 0; y + 1 < geometry.gridSize; ++y) {
-            for (size_t x = 0; x + 1 < geometry.gridSize; ++x) {
-                const size_t nextX = x + 1;
-                const size_t nextY = y + 1;
-                const bool odd = (((y * geometry.gridSize) + x) & 1u) != 0;
-                const size_t quad[4] = {
-                    disp_index(geometry, x, y),
-                    disp_index(geometry, x, nextY),
-                    disp_index(geometry, nextX, nextY),
-                    disp_index(geometry, nextX, y),
-                };
-                int tris[2][3];
-                if (odd) {
-                    tris[0][0] = 0; tris[0][1] = 1; tris[0][2] = 3;
-                    tris[1][0] = 1; tris[1][1] = 2; tris[1][2] = 3;
-                }
-                else {
-                    tris[0][0] = 0; tris[0][1] = 1; tris[0][2] = 2;
-                    tris[1][0] = 0; tris[1][1] = 2; tris[1][2] = 3;
-                }
-
-                for (int triIndex = 0; triIndex < 2; ++triIndex) {
-                    const size_t ia = quad[tris[triIndex][0]];
-                    const size_t ib = quad[tris[triIndex][1]];
-                    const size_t ic = quad[tris[triIndex][2]];
-                    const Common::Vec3f a = geometry.surfaceVertices[ia].pos;
-                    const Common::Vec3f b = geometry.surfaceVertices[ib].pos;
-                    const Common::Vec3f c = geometry.surfaceVertices[ic].pos;
-                    Common::Vec3f triNormal = Common::cross(Common::sub(b, a), Common::sub(c, a));
-                    if (Common::length(triNormal) <= 1e-6f) {
-                        continue;
-                    }
-                    orient_normal(geometry.faceNormal, triNormal);
-                    normalSums[ia] = Common::add(normalSums[ia], triNormal);
-                    normalSums[ib] = Common::add(normalSums[ib], triNormal);
-                    normalSums[ic] = Common::add(normalSums[ic], triNormal);
-                }
+        for (size_t i = 0; i < geometry.gridSize; ++i) {
+            for (size_t j = 0; j < geometry.gridSize; ++j) {
+                const size_t index = i * geometry.gridSize + j;
+                geometry.surfaceVertices[index].normal = calc_normal_from_edges(geometry, j, i);
             }
-        }
-
-        for (size_t index = 0; index < vertexCount; ++index) {
-            Common::Vec3f normal = Common::normalized(normalSums[index]);
-            if (!Common::is_finite(normal) || Common::length(normal) <= 1e-6f) {
-                normal = geometry.faceNormal;
-            }
-            orient_normal(geometry.faceNormal, normal);
-            geometry.surfaceVertices[index].normal = normal;
         }
 
         geometry.sampleMappings = decode_disp_sample_mappings(sourceMap, *dispInfo, geometry.lightmap);
@@ -635,10 +752,11 @@ namespace SilkRAD::V2::Geometry {
             }
         }
 
-        geometry.samples.reserve(geometry.lightmap.sample_count());
+        geometry.samples.resize(geometry.lightmap.sample_count());
         for (size_t y = 0; y < geometry.lightmap.height; ++y) {
             for (size_t x = 0; x < geometry.lightmap.width; ++x) {
-                Common::ReceiverSample sample;
+                const size_t sampleIndex = y * geometry.lightmap.width + x;
+                Common::ReceiverSample& sample = geometry.samples[sampleIndex];
                 sample.s = x;
                 sample.t = y;
                 sample.coord = Common::make_vec2(
@@ -661,27 +779,12 @@ namespace SilkRAD::V2::Geometry {
                 sample.area = 0.5f * Common::length(Common::cross(Common::sub(p1, p0), Common::sub(p2, p0)))
                     + 0.5f * Common::length(Common::cross(Common::sub(p2, p0), Common::sub(p3, p0)));
 
-                const size_t mappingIndex = y * geometry.lightmap.width + x;
-                bool haveMappedSample = false;
-                if (mappingIndex < geometry.sampleMappings.size()) {
-                    haveMappedSample = disp_sample_mapping_position(
-                        geometry,
-                        geometry.sampleMappings[mappingIndex],
-                        1.0f,
-                        sample.pos,
-                        sample.normal
-                    );
+                if (!disp_uv_to_surf_point(geometry, sample.coord.x, sample.coord.y, 1.0f, sample.pos)) {
+                    sample.pos = Common::make_vec3(0.0f, 0.0f, 0.0f);
                 }
-
-                if (!haveMappedSample) {
-                    if (!disp_uv_to_surf_point(geometry, sample.coord.x, sample.coord.y, 1.0f, sample.pos)) {
-                        continue;
-                    }
-                    if (!disp_uv_to_surf_normal(geometry, sample.coord.x, sample.coord.y, sample.normal)) {
-                        sample.normal = geometry.faceNormal;
-                    }
+                if (!disp_uv_to_surf_normal(geometry, sample.coord.x, sample.coord.y, sample.normal)) {
+                    sample.normal = geometry.faceNormal;
                 }
-                geometry.samples.push_back(sample);
             }
         }
 
@@ -692,10 +795,11 @@ namespace SilkRAD::V2::Geometry {
             ? 1.0f / static_cast<float>(geometry.lightmap.height - 1)
             : 0.0f;
 
-        geometry.luxels.reserve(geometry.lightmap.sample_count());
+        geometry.luxels.resize(geometry.lightmap.sample_count());
         for (size_t y = 0; y < geometry.lightmap.height; ++y) {
             for (size_t x = 0; x < geometry.lightmap.width; ++x) {
-                Common::ReceiverLuxel luxel;
+                const size_t luxelIndex = y * geometry.lightmap.width + x;
+                Common::ReceiverLuxel& luxel = geometry.luxels[luxelIndex];
                 luxel.s = x;
                 luxel.t = y;
                 Common::Vec3f point;
@@ -706,10 +810,9 @@ namespace SilkRAD::V2::Geometry {
                     1.0f,
                     point
                 )) {
-                    continue;
+                    point = Common::make_vec3(0.0f, 0.0f, 0.0f);
                 }
                 luxel.pos = point;
-                geometry.luxels.push_back(luxel);
             }
         }
 
