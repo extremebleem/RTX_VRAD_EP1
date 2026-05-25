@@ -18,6 +18,7 @@ struct CommandLineOptions {
     std::string inputFilename;
     std::string outputFilename;
     std::string gameRoot;
+    bool exportPly = false;
 };
 
 static std::string infer_asset_root_from_bsp(const std::string& filename) {
@@ -44,13 +45,16 @@ static std::string infer_asset_root_from_bsp(const std::string& filename) {
 
 static void print_usage(void) {
     std::cerr
-        << "Usage: SilkRAD.exe <input.bsp> [output.bsp] -game <mod_root_or_gameinfo.gi>"
+        << "Usage: SilkRAD.exe <input.bsp> [output.bsp] -game <mod_root_or_gameinfo.gi> [-exportply]"
         << std::endl
         << "Example: SilkRAD.exe D:\\games\\CSS_LOVE\\cstrike\\maps\\de_brigia_hvh.bsp "
         << "D:\\games\\CSS_LOVE\\cstrike\\maps\\out.bsp -game D:\\games\\CSS_LOVE\\cstrike"
         << std::endl
         << "Example: SilkRAD.exe D:\\games\\CSS_LOVE\\cstrike\\maps\\de_brigia_hvh.bsp "
         << "D:\\games\\CSS_LOVE\\cstrike\\maps\\out.bsp -game D:\\games\\CSS_LOVE\\cstrike\\gameinfo.gi"
+        << std::endl
+        << "Example: SilkRAD.exe D:\\games\\CSS_LOVE\\cstrike\\maps\\de_brigia_hvh.bsp "
+        << "D:\\games\\CSS_LOVE\\cstrike\\maps\\out.bsp -game D:\\games\\CSS_LOVE\\cstrike\\gameinfo.gi -exportply"
         << std::endl;
 }
 
@@ -71,6 +75,11 @@ static bool parse_command_line(
             }
 
             options.gameRoot = argv[++i];
+            continue;
+        }
+
+        if (arg == "-exportply" || arg == "--exportply") {
+            options.exportPly = true;
             continue;
         }
 
@@ -167,16 +176,6 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    /*
-     * HACK!
-     * Disable normal maps throughout the entire BSP, because I didn't
-     * implement them and we don't have time.
-     */
-    for (const BSP::TexInfo& texInfo : pBSP->get_texinfos()) {
-        BSP::TexInfo& ti = const_cast<BSP::TexInfo&>(texInfo);
-        ti.flags &= ~BSP::SURF_BUMPLIGHT;
-    }
-
     pBSP->build_worldlights();
     pBSP->clear_baked_lighting();
 
@@ -220,17 +219,28 @@ int main(int argc, char** argv) {
     std::cout << "Run direct lighting antialiasing pass..." << std::endl;
     //CUDARAD::antialias_direct_lighting(*pBSP, pCudaBSP);
 
-    std::cout << "Compute light bounces..." << std::endl;
-    //CUDARAD::bounce_lighting(*pBSP, pCudaBSP);
-
-    std::cout << "Compute ambient lighting..." << std::endl;
-    //CUDARAD::compute_leaf_ambient(*pBSP, pCudaBSP);
+    // Direct-only baseline: keep bounce and ambient code in the tree,
+    // but do not run those stages while verifying the direct pipeline.
 
     std::cout << "Convert light samples to RGBExp32..." << std::endl;
     CUDABSP::convert_lightsamples(pCudaBSP);
 
     std::cout << "Update host BSP data..." << std::endl;
     CUDABSP::update_bsp(*pBSP, pCudaBSP);
+
+    std::cout << "Write static prop direct lighting..." << std::endl;
+    CUDARAD::write_static_prop_direct_lighting(*pBSP, outputFilename);
+
+    if (options.exportPly) {
+        std::string debugPlyFilename = outputFilename;
+        const size_t debugPlyDot = debugPlyFilename.find_last_of('.');
+        if (debugPlyDot != std::string::npos) {
+            debugPlyFilename.resize(debugPlyDot);
+        }
+        debugPlyFilename += ".lighting_debug.ply";
+        std::cout << "Write lighting debug PLY..." << std::endl;
+        CUDARAD::debug_export_lighting_ply(*pBSP, debugPlyFilename);
+    }
 
     CUDABSP::destroy_cudabsp(pCudaBSP);
 

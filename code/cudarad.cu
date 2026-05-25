@@ -33,7 +33,9 @@
 #include "cudautils.h"
 
 #include "core/state.h"
+#include "core/debug_ply.h"
 #include "core/lighting/ambient_lighting.h"
+#include "core/lighting/bounce_lighting.h"
 
 
 #ifndef MAX_LIGHTSTYLES
@@ -2295,7 +2297,9 @@ namespace CUDARAD {
             << direct.worldTriangleCount << " world-face tris, "
             << direct.worldBrushTriangleCount << " world-brush tris, "
             << direct.displacementTriangleCount << " disp tris, "
-            << direct.staticPropTriangleCount << " static-prop tris)"
+            << direct.staticPropTriangleCount << " static-prop tris, "
+            << direct.staticPropCount << " static props, "
+            << direct.staticPropVertexCount << " static-prop vertices)"
             << std::endl;
 
         if (!g_pOptixTracer) {
@@ -2325,6 +2329,51 @@ namespace CUDARAD {
             pCudaBSP,
             *g_coreState,
             *g_pOptixTracer
+        );
+    }
+
+    void compute_bounce_lighting(BSP::BSP& bsp, CUDABSP::CUDABSP* pCudaBSP) {
+        if (!g_coreState) {
+            init(bsp);
+        }
+
+        if (!g_pOptixTracer) {
+            throw std::runtime_error("CUDARAD::init must create the OptiX tracer before bounce lighting");
+        }
+
+        SilkRAD::Core::Lighting::compute_bounce_lighting_runtime(
+            bsp,
+            pCudaBSP,
+            *g_coreState,
+            g_optixTriangles,
+            *g_pOptixTracer
+        );
+    }
+
+    void write_static_prop_direct_lighting(
+        BSP::BSP& bsp,
+        const std::string& outputBspFilename
+    ) {
+        if (!g_coreState) {
+            init(bsp);
+        }
+
+        SilkRAD::Core::Lighting::write_static_prop_direct_lighting(
+            bsp,
+            *g_coreState,
+            outputBspFilename
+        );
+    }
+
+    void debug_export_lighting_ply(BSP::BSP& bsp, const std::string& filename) {
+        if (!g_coreState) {
+            init(bsp);
+        }
+
+        SilkRAD::Core::Debug::export_lighting_receivers_ply(
+            bsp,
+            *g_coreState,
+            filename
         );
     }
 

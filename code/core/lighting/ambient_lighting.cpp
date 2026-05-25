@@ -252,11 +252,51 @@ namespace SilkRAD::Core::Lighting {
             return make_float3(a.x * b.x, a.y * b.y, a.z * b.z);
         }
 
+        ::BSP::RGBExp32 rgbexp32_from_float3(float3 color)
+        {
+            color.x = std::max(color.x, 0.0f);
+            color.y = std::max(color.y, 0.0f);
+            color.z = std::max(color.z, 0.0f);
+
+            float maxColor = std::max(color.x, std::max(color.y, color.z));
+            int exponent = 0;
+
+            if (maxColor > 0.0f) {
+                float normalizedColor = maxColor;
+                while (normalizedColor > 255.0f && exponent < 127) {
+                    ++exponent;
+                    normalizedColor *= 0.5f;
+                }
+                while (normalizedColor < 127.0f && exponent > -128) {
+                    --exponent;
+                    normalizedColor *= 2.0f;
+                }
+            }
+
+            const float scalar = std::ldexp(1.0f, -exponent);
+            return ::BSP::RGBExp32{
+                static_cast<uint8_t>(std::min(color.x * scalar, 255.0f)),
+                static_cast<uint8_t>(std::min(color.y * scalar, 255.0f)),
+                static_cast<uint8_t>(std::min(color.z * scalar, 255.0f)),
+                static_cast<int8_t>(exponent)
+            };
+        }
+
+        float3 rgbexp32_to_linear_float3(const ::BSP::RGBExp32& sample)
+        {
+            const float scale = std::ldexp(1.0f, static_cast<int>(sample.exp));
+            return make_float3(
+                static_cast<float>(sample.r) * scale,
+                static_cast<float>(sample.g) * scale,
+                static_cast<float>(sample.b) * scale
+            );
+        }
+
         float3 find_sky_ambient(const ::BSP::BSP& bsp)
         {
             for (const ::BSP::DWorldLight& light : bsp.get_worldlights()) {
                 if (light.type == ::BSP::EMIT_SKYAMBIENT && light.style == 0) {
-                    return make_float3(light.intensity) * 255.0f;
+                    return make_float3(light.intensity);
                 }
             }
 
@@ -296,12 +336,11 @@ namespace SilkRAD::Core::Lighting {
 
         float3 compute_lightmap_color_from_average(
             const ::BSP::BSP& bsp,
-            const std::vector<float3>& faceAverages,
             size_t faceIndex,
             float3 skyAmbient
         )
         {
-            if (faceIndex >= faceAverages.size()) {
+            if (faceIndex >= bsp.get_dfaces().size()) {
                 return make_float3();
             }
 
@@ -314,14 +353,22 @@ namespace SilkRAD::Core::Lighting {
                 return make_float3();
             }
 
-            return component_multiply(faceAverages[faceIndex], surface_reflectivity(bsp, faceIndex));
+            const size_t lightmapStartIndex =
+                static_cast<size_t>(face.lightOffset / sizeof(::BSP::RGBExp32));
+            if (lightmapStartIndex == 0 || lightmapStartIndex > bsp.get_lightsamples().size()) {
+                return make_float3();
+            }
+
+            const float3 avgLight = rgbexp32_to_linear_float3(
+                bsp.get_lightsamples()[lightmapStartIndex - 1]
+            );
+            return component_multiply(avgLight, surface_reflectivity(bsp, faceIndex));
         }
 
         float3 compute_lightmap_color_displacement(
             const ::BSP::BSP& bsp,
             const RuntimeState& state,
             const std::vector<float3>& lightSamples,
-            const std::vector<float3>& faceAverages,
             size_t faceIndex,
             Common::Vec3f hitPoint,
             float3 skyAmbient
@@ -339,7 +386,6 @@ namespace SilkRAD::Core::Lighting {
             if (!geometry.valid) {
                 return compute_lightmap_color_from_average(
                     bsp,
-                    faceAverages,
                     faceIndex,
                     skyAmbient
                 );
@@ -369,7 +415,6 @@ namespace SilkRAD::Core::Lighting {
                 else {
                     return compute_lightmap_color_from_average(
                         bsp,
-                        faceAverages,
                         faceIndex,
                         skyAmbient
                     );
@@ -479,7 +524,6 @@ namespace SilkRAD::Core::Lighting {
             const ::BSP::BSP& bsp,
             const RuntimeState& state,
             const std::vector<float3>& lightSamples,
-            const std::vector<float3>& faceAverages,
             const std::vector<OptixRT::Triangle>& triangles,
             const OptixRT::SunRay& ray,
             const OptixRT::RayHit& hit,
@@ -497,7 +541,7 @@ namespace SilkRAD::Core::Lighting {
             }
 
             if (surfaceTrace.sourceId == INVALID_SOURCE_FACE
-                || surfaceTrace.sourceId >= faceAverages.size()) {
+                || surfaceTrace.sourceId >= bsp.get_dfaces().size()) {
                 return make_float3();
             }
 
@@ -509,7 +553,6 @@ namespace SilkRAD::Core::Lighting {
                     bsp,
                     state,
                     lightSamples,
-                    faceAverages,
                     faceIndex,
                     hitPoint,
                     skyAmbient
@@ -518,41 +561,11 @@ namespace SilkRAD::Core::Lighting {
 
             return compute_lightmap_color_from_average(
                 bsp,
-                faceAverages,
                 faceIndex,
                 skyAmbient
             );
         }
 
-        ::BSP::RGBExp32 rgbexp32_from_float3(float3 color)
-        {
-            color.x = std::max(color.x, 0.0f);
-            color.y = std::max(color.y, 0.0f);
-            color.z = std::max(color.z, 0.0f);
-
-            float maxColor = std::max(color.x, std::max(color.y, color.z));
-            int exponent = 0;
-
-            if (maxColor > 0.0f) {
-                float normalizedColor = maxColor;
-                while (normalizedColor > 255.0f && exponent < 127) {
-                    ++exponent;
-                    normalizedColor *= 0.5f;
-                }
-                while (normalizedColor < 127.0f && exponent > -128) {
-                    --exponent;
-                    normalizedColor *= 2.0f;
-                }
-            }
-
-            const float scalar = std::ldexp(1.0f, -exponent);
-            return ::BSP::RGBExp32{
-                static_cast<uint8_t>(std::min(color.x * scalar, 255.0f)),
-                static_cast<uint8_t>(std::min(color.y * scalar, 255.0f)),
-                static_cast<uint8_t>(std::min(color.z * scalar, 255.0f)),
-                static_cast<int8_t>(exponent)
-            };
-        }
     }
 
     void compute_leaf_ambient_from_cuda_runtime(
@@ -570,43 +583,27 @@ namespace SilkRAD::Core::Lighting {
             cudaMemcpyDeviceToHost
         ));
 
-        std::vector<float3> lightSamples(
+        std::vector<float3> rawLightSamples(
             bsp.get_lightsamples().size(),
             make_float3()
         );
-        if (!lightSamples.empty()) {
+        if (!rawLightSamples.empty()) {
             CUDA_CHECK_ERROR(cudaMemcpy(
-                lightSamples.data(),
+                rawLightSamples.data(),
                 cudaBSP.lightSamples,
-                sizeof(float3) * lightSamples.size(),
+                sizeof(float3) * rawLightSamples.size(),
                 cudaMemcpyDeviceToHost
             ));
         }
 
-        std::vector<float3> faceAverages(bsp.get_dfaces().size(), make_float3());
-        for (size_t faceIndex = 0; faceIndex < bsp.get_dfaces().size(); ++faceIndex) {
-            const ::BSP::DFace& face = bsp.get_dfaces()[faceIndex];
-            if (face.lightOffset < 0) {
-                continue;
-            }
-
-            const size_t lightmapWidth =
-                static_cast<size_t>(face.lightmapTextureSizeInLuxels[0] + 1);
-            const size_t lightmapHeight =
-                static_cast<size_t>(face.lightmapTextureSizeInLuxels[1] + 1);
-            const size_t lightmapSize = lightmapWidth * lightmapHeight;
-            if (lightmapSize == 0) {
-                continue;
-            }
-
-            const size_t startIndex =
-                static_cast<size_t>(face.lightOffset / sizeof(::BSP::RGBExp32));
-            float3 totalLight = make_float3();
-            for (size_t sampleIndex = 0; sampleIndex < lightmapSize; ++sampleIndex) {
-                totalLight += lightSamples[startIndex + sampleIndex];
-            }
-
-            faceAverages[faceIndex] = totalLight / static_cast<float>(lightmapSize);
+        std::vector<float3> lightSamples(
+            rawLightSamples.size(),
+            make_float3()
+        );
+        for (size_t i = 0; i < rawLightSamples.size(); ++i) {
+            lightSamples[i] = rgbexp32_to_linear_float3(
+                rgbexp32_from_float3(rawLightSamples[i])
+            );
         }
 
         std::vector<::BSP::CompressedLightCube> leafAmbient;
@@ -614,7 +611,6 @@ namespace SilkRAD::Core::Lighting {
             bsp,
             state,
             lightSamples,
-            faceAverages,
             leafAmbient,
             tracer
         );
@@ -635,7 +631,6 @@ namespace SilkRAD::Core::Lighting {
         const ::BSP::BSP& bsp,
         const RuntimeState& state,
         const std::vector<float3>& lightSamples,
-        const std::vector<float3>& faceAverages,
         std::vector<::BSP::CompressedLightCube>& leafAmbient,
         OptixRT::OptixSunLosTracer& tracer
     )
@@ -714,7 +709,6 @@ namespace SilkRAD::Core::Lighting {
                 bsp,
                 state,
                 lightSamples,
-                faceAverages,
                 ambientTriangles,
                 ambientRays[i],
                 ambientHits[i],

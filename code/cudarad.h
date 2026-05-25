@@ -50,7 +50,10 @@ namespace CUDARAD {
     void cleanup(void);
 
     void compute_direct_lighting(BSP::BSP& bsp, CUDABSP::CUDABSP* pCudaBSP);
+    void compute_bounce_lighting(BSP::BSP& bsp, CUDABSP::CUDABSP* pCudaBSP);
     void compute_leaf_ambient(BSP::BSP& bsp, CUDABSP::CUDABSP* pCudaBSP);
+    void write_static_prop_direct_lighting(BSP::BSP& bsp, const std::string& outputBspFilename);
+    void debug_export_lighting_ply(BSP::BSP& bsp, const std::string& filename);
 }
 
 #endif

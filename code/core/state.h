@@ -6,6 +6,7 @@
 #include "bsp/source_map.h"
 #include "geometry/disp_geometry.h"
 #include "geometry/face_geometry.h"
+#include "lighting/bounce_lighting.h"
 #include "lighting/direct_lighting.h"
 #include "scene/scene_builder.h"
 

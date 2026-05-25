@@ -11,6 +11,7 @@
 namespace SilkRAD::Core::Scene {
     struct SceneBuildOptions {
         std::vector<std::string> assetSearchRoots;
+        bool includeWorldBrushSideOccluders = true;
     };
 
     struct SceneBuildResult {
@@ -18,6 +19,7 @@ namespace SilkRAD::Core::Scene {
         std::vector<Common::OccluderTriangle> worldBrushTriangles;
         std::vector<Common::OccluderTriangle> displacementTriangles;
         std::vector<Common::OccluderTriangle> staticPropTriangles;
+        std::vector<Common::StaticPropLightingProp> staticPropLightingProps;
     };
 
     SceneBuildResult build_scene(

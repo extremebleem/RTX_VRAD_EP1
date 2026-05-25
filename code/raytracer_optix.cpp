@@ -37,6 +37,57 @@ namespace OptixRT
         (void)message;
     }
 
+    static float3 add3(float3 a, float3 b)
+    {
+        return make_float3(a.x + b.x, a.y + b.y, a.z + b.z);
+    }
+
+    static float3 sub3(float3 a, float3 b)
+    {
+        return make_float3(a.x - b.x, a.y - b.y, a.z - b.z);
+    }
+
+    static float3 scale3(float3 v, float scale)
+    {
+        return make_float3(v.x * scale, v.y * scale, v.z * scale);
+    }
+
+    static float length3(float3 v)
+    {
+        return std::sqrt(v.x * v.x + v.y * v.y + v.z * v.z);
+    }
+
+    static float3 normalized3(float3 v)
+    {
+        const float length = length3(v);
+        if (length <= 1e-20f) {
+            return make_float3(0.0f, 0.0f, 0.0f);
+        }
+        return scale3(v, 1.0f / length);
+    }
+
+    static Triangle widened_triangle(Triangle triangle)
+    {
+        static constexpr float kTriangleWidenEpsilon = 0.125f;
+        const float3 center = scale3(
+            add3(add3(triangle.v0, triangle.v1), triangle.v2),
+            1.0f / 3.0f
+        );
+        triangle.v0 = add3(
+            triangle.v0,
+            scale3(normalized3(sub3(triangle.v0, center)), kTriangleWidenEpsilon)
+        );
+        triangle.v1 = add3(
+            triangle.v1,
+            scale3(normalized3(sub3(triangle.v1, center)), kTriangleWidenEpsilon)
+        );
+        triangle.v2 = add3(
+            triangle.v2,
+            scale3(normalized3(sub3(triangle.v2, center)), kTriangleWidenEpsilon)
+        );
+        return triangle;
+    }
+
     // -------------------------------------------------------------------------------------------------
     // Input/output structs shared by host and device
     // -------------------------------------------------------------------------------------------------
@@ -144,7 +195,7 @@ namespace OptixRT
             indices.reserve(triangles.size());
 
             for (size_t i = 0; i < triangles.size(); ++i) {
-                const Triangle& t = triangles[i];
+                const Triangle t = widened_triangle(triangles[i]);
 
                 // Important Source/VRAD note:
                 // If old manual tracer had to flip winding for Source CW faces, you have two safe choices:

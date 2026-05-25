@@ -22,7 +22,6 @@ namespace SilkRAD::Core::Lighting {
         const ::BSP::BSP& bsp,
         const RuntimeState& state,
         const std::vector<float3>& lightSamples,
-        const std::vector<float3>& faceAverages,
         std::vector<::BSP::CompressedLightCube>& leafAmbient,
         OptixRT::OptixSunLosTracer& tracer
     );

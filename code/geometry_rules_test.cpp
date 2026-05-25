@@ -21,7 +21,8 @@ int main()
     expect_true(
         GeometryRules::world_brush_side_blocks_light(
             BSP::CONTENTS_SOLID,
-            BSP::SURF_TRANS
+            BSP::SURF_TRANS,
+            "brick/wall"
         ),
         "Opaque brush side with SURF_TRANS must block light like VRAD."
     );
@@ -29,7 +30,8 @@ int main()
     expect_true(
         GeometryRules::world_brush_side_blocks_light(
             BSP::CONTENTS_SOLID,
-            BSP::SURF_NODRAW
+            BSP::SURF_NODRAW,
+            "tools/toolsnodraw"
         ),
         "Opaque brush side with SURF_NODRAW must still block light."
     );
@@ -37,7 +39,8 @@ int main()
     expect_true(
         GeometryRules::world_brush_side_blocks_light(
             BSP::CONTENTS_SOLID,
-            BSP::SURF_NOLIGHT
+            BSP::SURF_NOLIGHT,
+            "tools/toolsnodraw"
         ),
         "Opaque brush side with SURF_NOLIGHT must still block light."
     );
@@ -45,7 +48,8 @@ int main()
     expect_false(
         GeometryRules::world_brush_side_blocks_light(
             BSP::CONTENTS_SOLID,
-            BSP::SURF_SKY
+            BSP::SURF_SKY,
+            "tools/toolsskybox"
         ),
         "Sky brush side should be handled as sky, not as an opaque occluder."
     );
@@ -53,9 +57,19 @@ int main()
     expect_false(
         GeometryRules::world_brush_side_blocks_light(
             BSP::CONTENTS_GRATE,
-            0
+            0,
+            "metal/grate"
         ),
         "Non-opaque brush contents must not block light."
+    );
+
+    expect_true(
+        GeometryRules::world_brush_side_blocks_light(
+            BSP::CONTENTS_GRATE,
+            BSP::SURF_NODRAW,
+            "tools/toolsnodraw"
+        ),
+        "Invisible tool materials must block light even without opaque contents."
     );
 
     return 0;

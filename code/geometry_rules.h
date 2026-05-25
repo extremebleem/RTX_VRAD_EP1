@@ -109,20 +109,46 @@ namespace GeometryRules {
         return (brushContents & maskOpaque) != 0;
     }
 
-    inline bool world_brush_side_blocks_light(
-        int32_t brushContents,
-        int32_t surfaceFlags
-    )
+    inline bool invisible_tool_material_blocks_light(const std::string& materialName)
     {
-        if (!brush_contents_block_light(brushContents)) {
+        const std::string name = lower_material_name(materialName);
+
+        if (!starts_with(name, "tools/")) {
             return false;
         }
 
+        if (name.find("sky") != std::string::npos
+            || name.find("trigger") != std::string::npos
+            || name.find("skip") != std::string::npos
+            || name.find("hint") != std::string::npos
+            || name.find("origin") != std::string::npos
+            || name.find("areaportal") != std::string::npos) {
+            return false;
+        }
+
+        return name.find("nodraw") != std::string::npos
+            || name.find("invisible") != std::string::npos
+            || name.find("black") != std::string::npos
+            || name.find("clip") != std::string::npos
+            || name.find("occluder") != std::string::npos
+            || name.find("blocklight") != std::string::npos;
+    }
+
+    inline bool world_brush_side_blocks_light(
+        int32_t brushContents,
+        int32_t surfaceFlags,
+        const std::string& materialName
+    )
+    {
         if (surfaceFlags & BSP::SURF_SKY) {
             return false;
         }
 
-        return true;
+        if (invisible_tool_material_blocks_light(materialName)) {
+            return true;
+        }
+
+        return brush_contents_block_light(brushContents);
     }
 }
 

@@ -21,12 +21,14 @@
     <ClInclude Include="raytracer.h" />
     <ClInclude Include="raytracer_optix.h" />
     <ClInclude Include="core\state.h" />
+    <ClInclude Include="core\debug_ply.h" />
     <ClInclude Include="core\bsp\source_map.h" />
     <ClInclude Include="core\common\math.h" />
     <ClInclude Include="core\common\types.h" />
     <ClInclude Include="core\geometry\disp_geometry.h" />
     <ClInclude Include="core\geometry\face_geometry.h" />
     <ClInclude Include="core\lighting\ambient_lighting.h" />
+    <ClInclude Include="core\lighting\bounce_lighting.h" />
     <ClInclude Include="core\lighting\direct_lighting.h" />
     <ClInclude Include="core\scene\scene_builder.h" />
     <ClInclude Include="core\tracing\trace.h" />
@@ -36,10 +38,12 @@
     <ClCompile Include="bsp.cpp" />
     <ClCompile Include="raytracer_optix.cpp" />
     <ClCompile Include="core\state.cpp" />
+    <ClCompile Include="core\debug_ply.cpp" />
     <ClCompile Include="core\bsp\source_map.cpp" />
     <ClCompile Include="core\geometry\disp_geometry.cpp" />
     <ClCompile Include="core\geometry\face_geometry.cpp" />
     <ClCompile Include="core\lighting\ambient_lighting.cpp" />
+    <ClCompile Include="core\lighting\bounce_lighting.cpp" />
     <ClCompile Include="core\lighting\direct_lighting.cpp" />
     <ClCompile Include="core\scene\scene_builder.cpp" />
     <ClCompile Include="core\tracing\trace.cpp" />

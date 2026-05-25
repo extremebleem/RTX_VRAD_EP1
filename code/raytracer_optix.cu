@@ -50,7 +50,6 @@ namespace OptixRT
             r.tmax,
             0.0f,
             OptixVisibilityMask(r.visibilityMask & 0xffu),
-            OPTIX_RAY_FLAG_TERMINATE_ON_FIRST_HIT |
             OPTIX_RAY_FLAG_DISABLE_ANYHIT,
             0, 1, 0,
             hit,

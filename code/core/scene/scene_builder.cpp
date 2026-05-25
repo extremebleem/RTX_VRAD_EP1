@@ -21,10 +21,17 @@ namespace SilkRAD::Core::Scene {
             Common::Vec3f v2;
         };
 
+        struct StaticPropLightingMeshData {
+            size_t lod = 0;
+            std::vector<Common::StaticPropLightingVertex> vertices;
+        };
+
         struct StaticPropMesh {
             bool attempted = false;
             bool loaded = false;
+            uint32_t checksum = 0;
             std::vector<StaticPropTriangle> triangles;
+            std::vector<StaticPropLightingMeshData> lightingMeshes;
         };
 
 #pragma pack(push, 1)
@@ -417,6 +424,35 @@ namespace SilkRAD::Core::Scene {
             );
         }
 
+        Common::Vec3f transform_static_prop_normal(
+            Common::Vec3f normal,
+            const ::BSP::StaticPropLumpV5& prop
+        )
+        {
+            const float pitch = prop.angles.x * 0.01745329251994329577f;
+            const float yaw = prop.angles.y * 0.01745329251994329577f;
+            const float roll = prop.angles.z * 0.01745329251994329577f;
+
+            const float sp = std::sin(pitch);
+            const float cp = std::cos(pitch);
+            const float sy = std::sin(yaw);
+            const float cy = std::cos(yaw);
+            const float sr = std::sin(roll);
+            const float cr = std::cos(roll);
+
+            return Common::normalized(Common::make_vec3(
+                normal.x * (cp * cy)
+                    + normal.y * (sr * sp * cy + cr * -sy)
+                    + normal.z * (cr * sp * cy + -sr * -sy),
+                normal.x * (cp * sy)
+                    + normal.y * (sr * sp * sy + cr * cy)
+                    + normal.z * (cr * sp * sy + -sr * cy),
+                normal.x * (-sp)
+                    + normal.y * (sr * cp)
+                    + normal.z * (cr * cp)
+            ));
+        }
+
         bool static_prop_model_name(
             const ::BSP::StaticPropData& staticProps,
             const ::BSP::StaticPropLumpV5& prop,
@@ -450,6 +486,28 @@ namespace SilkRAD::Core::Scene {
                 static_cast<size_t>(vvdHeader.vertexDataStart)
                 + static_cast<size_t>(vertexIndex) * sizeof(StudioVertex)
                 + offsetof(StudioVertex, position);
+
+            if (!valid_range(vvd, offset, sizeof(float) * 3)) {
+                return nullptr;
+            }
+
+            return reinterpret_cast<const Common::Vec3f*>(vvd.data() + offset);
+        }
+
+        const Common::Vec3f* get_vvd_vertex_normal(
+            const std::vector<uint8_t>& vvd,
+            const VvdHeader& vvdHeader,
+            int32_t vertexIndex
+        )
+        {
+            if (vertexIndex < 0) {
+                return nullptr;
+            }
+
+            const size_t offset =
+                static_cast<size_t>(vvdHeader.vertexDataStart)
+                + static_cast<size_t>(vertexIndex) * sizeof(StudioVertex)
+                + offsetof(StudioVertex, normal);
 
             if (!valid_range(vvd, offset, sizeof(float) * 3)) {
                 return nullptr;
@@ -501,6 +559,8 @@ namespace SilkRAD::Core::Scene {
                 || !read_struct(vtx, 0, vtxHeader)) {
                 return false;
             }
+
+            mesh.checksum = static_cast<uint32_t>(studioHeader.checksum);
 
             if (studioHeader.numBodyParts <= 0
                 || vtxHeader.numBodyParts <= 0
@@ -590,6 +650,44 @@ namespace SilkRAD::Core::Scene {
                                 continue;
                             }
 
+                            StaticPropLightingMeshData lightingMesh;
+                            lightingMesh.lod = 0;
+                            lightingMesh.vertices.reserve(
+                                static_cast<size_t>(std::max(stripGroup.numVerts, 0))
+                            );
+
+                            for (int vertexId = 0; vertexId < stripGroup.numVerts; ++vertexId) {
+                                const size_t vertexOffset =
+                                    stripGroupOffset
+                                    + static_cast<size_t>(stripGroup.vertOffset)
+                                    + static_cast<size_t>(vertexId) * sizeof(VtxVertex);
+                                VtxVertex vertex{};
+                                if (!read_struct(vtx, vertexOffset, vertex)) {
+                                    lightingMesh.vertices.clear();
+                                    break;
+                                }
+
+                                const int32_t originalVertexId =
+                                    studioModel.vertexIndex
+                                    + studioMesh.vertexOffset
+                                    + vertex.origMeshVertID;
+                                const Common::Vec3f* position =
+                                    get_vvd_vertex_position(vvd, vvdHeader, originalVertexId);
+                                const Common::Vec3f* normal =
+                                    get_vvd_vertex_normal(vvd, vvdHeader, originalVertexId);
+                                if (!position || !normal) {
+                                    lightingMesh.vertices.clear();
+                                    break;
+                                }
+
+                                lightingMesh.vertices.push_back(
+                                    Common::StaticPropLightingVertex{
+                                        *position,
+                                        *normal
+                                    }
+                                );
+                            }
+
                             for (int stripId = 0; stripId < stripGroup.numStrips; ++stripId) {
                                 VtxStripHeader strip{};
                                 const size_t stripOffset =
@@ -662,6 +760,10 @@ namespace SilkRAD::Core::Scene {
                                     mesh.triangles.push_back({ *p0, *p1, *p2 });
                                 }
                             }
+
+                            if (!lightingMesh.vertices.empty()) {
+                                mesh.lightingMeshes.push_back(std::move(lightingMesh));
+                            }
                         }
                     }
                 }
@@ -696,19 +798,47 @@ namespace SilkRAD::Core::Scene {
         {
             const Common::Vec3f normal = Common::normalized(from_bsp_vec3(plane.normal));
             const Common::Vec3f center = Common::scale(normal, plane.dist);
-            const Common::Vec3f up = std::fabs(normal.z) < 0.999f
-                ? Common::make_vec3(0.0f, 0.0f, 1.0f)
-                : Common::make_vec3(1.0f, 0.0f, 0.0f);
-            const Common::Vec3f tangent = Common::normalized(Common::cross(up, normal));
-            const Common::Vec3f bitangent = Common::normalized(Common::cross(normal, tangent));
+            Common::Vec3f up = Common::make_vec3(0.0f, 0.0f, 0.0f);
+            if (std::fabs(normal.x) >= std::fabs(normal.y)
+                && std::fabs(normal.x) >= std::fabs(normal.z)) {
+                up.z = 1.0f;
+            }
+            else if (std::fabs(normal.y) >= std::fabs(normal.z)) {
+                up.z = 1.0f;
+            }
+            else {
+                up.x = 1.0f;
+            }
+
+            up = Common::normalized(Common::sub(
+                up,
+                Common::scale(normal, Common::dot(up, normal))
+            ));
+            const Common::Vec3f right = Common::normalized(Common::cross(up, normal));
             const float size = 16384.0f * 2.0f;
+            const Common::Vec3f scaledUp = Common::scale(up, size);
+            const Common::Vec3f scaledRight = Common::scale(right, size);
 
             return {
-                Common::sub(Common::sub(center, Common::scale(tangent, size)), Common::scale(bitangent, size)),
-                Common::add(Common::sub(center, Common::scale(bitangent, size)), Common::scale(tangent, size)),
-                Common::add(Common::add(center, Common::scale(tangent, size)), Common::scale(bitangent, size)),
-                Common::sub(Common::add(center, Common::scale(bitangent, size)), Common::scale(tangent, size)),
+                Common::add(Common::sub(center, scaledRight), scaledUp),
+                Common::add(Common::add(center, scaledRight), scaledUp),
+                Common::sub(Common::add(center, scaledRight), scaledUp),
+                Common::sub(Common::sub(center, scaledRight), scaledUp),
             };
+        }
+
+        ::BSP::DPlane flipped_plane(const std::vector<::BSP::DPlane>& planes, size_t planeIndex)
+        {
+            if ((planeIndex ^ 1u) < planes.size()) {
+                return planes[planeIndex ^ 1u];
+            }
+
+            ::BSP::DPlane plane = planes[planeIndex];
+            plane.normal.x = -plane.normal.x;
+            plane.normal.y = -plane.normal.y;
+            plane.normal.z = -plane.normal.z;
+            plane.dist = -plane.dist;
+            return plane;
         }
 
         std::vector<Common::Vec3f> clip_winding_to_plane(
@@ -729,8 +859,8 @@ namespace SilkRAD::Core::Scene {
                 const Common::Vec3f b = input[(i + 1) % input.size()];
                 const float da = Common::dot(a, normal) - plane.dist;
                 const float db = Common::dot(b, normal) - plane.dist;
-                const bool aInside = da <= CLIP_EPSILON;
-                const bool bInside = db <= CLIP_EPSILON;
+                const bool aInside = da >= -CLIP_EPSILON;
+                const bool bInside = db >= -CLIP_EPSILON;
 
                 if (aInside && bInside) {
                     output.push_back(b);
@@ -772,8 +902,7 @@ namespace SilkRAD::Core::Scene {
                 }
 
                 const ::BSP::DBrush& brush = brushes[brushIndex];
-                if (!GeometryRules::brush_contents_block_light(brush.contents)
-                    || brush.firstSide < 0
+                if (brush.firstSide < 0
                     || brush.numSides <= 0) {
                     continue;
                 }
@@ -787,19 +916,23 @@ namespace SilkRAD::Core::Scene {
                 for (size_t localSide = 0; localSide < numSides; ++localSide) {
                     const size_t sideIndex = firstSide + localSide;
                     const ::BSP::DBrushSide& side = sides[sideIndex];
-                    if (side.bevel || side.planeNum >= planes.size()) {
+                    if (side.bevel || side.dispInfo >= 0 || side.planeNum >= planes.size()) {
                         continue;
                     }
 
                     int32_t surfaceFlags = 0;
+                    std::string materialName;
                     if (side.texInfo >= 0
                         && static_cast<size_t>(side.texInfo) < bsp.get_texinfos().size()) {
-                        surfaceFlags = bsp.get_texinfos()[side.texInfo].flags;
+                        const ::BSP::TexInfo& texInfo = bsp.get_texinfos()[side.texInfo];
+                        surfaceFlags = texInfo.flags;
+                        materialName = bsp.get_texture_name(texInfo.texData);
                     }
 
                     if (!GeometryRules::world_brush_side_blocks_light(
                             brush.contents,
-                            surfaceFlags)) {
+                            surfaceFlags,
+                            materialName)) {
                         continue;
                     }
 
@@ -811,12 +944,18 @@ namespace SilkRAD::Core::Scene {
                         }
 
                         const ::BSP::DBrushSide& otherSide = sides[otherSideIndex];
+                        if (otherSide.bevel) {
+                            continue;
+                        }
                         if (otherSide.planeNum >= planes.size()) {
                             winding.clear();
                             break;
                         }
 
-                        winding = clip_winding_to_plane(winding, planes[otherSide.planeNum]);
+                        winding = clip_winding_to_plane(
+                            winding,
+                            flipped_plane(planes, otherSide.planeNum)
+                        );
                     }
 
                     if (winding.size() < 3) {
@@ -833,16 +972,16 @@ namespace SilkRAD::Core::Scene {
                             continue;
                         }
 
-                    result.worldBrushTriangles.push_back(make_triangle(
-                        a,
-                        b,
-                        c,
-                        0xffffffffu,
-                        GeometryRules::RTX_ROLE_OCCLUDER,
-                        Common::OccluderTriangle::SourceKind::Brush,
-                        surfaceFlags,
-                        brush.contents
-                    ));
+                        result.worldBrushTriangles.push_back(make_triangle(
+                            a,
+                            b,
+                            c,
+                            static_cast<uint32_t>(brushIndex),
+                            GeometryRules::RTX_ROLE_OCCLUDER,
+                            Common::OccluderTriangle::SourceKind::Brush,
+                            surfaceFlags,
+                            brush.contents
+                        ));
                     }
                 }
             }
@@ -890,12 +1029,57 @@ namespace SilkRAD::Core::Scene {
                         tv0,
                         tv1,
                         tv2,
-                        0xffffffffu,
+                        static_cast<uint32_t>(&prop - staticProps.props.data()),
                         GeometryRules::RTX_ROLE_OCCLUDER | GeometryRules::RTX_ROLE_STATIC_PROP,
                         Common::OccluderTriangle::SourceKind::StaticProp,
                         0,
                         ::BSP::CONTENTS_SOLID | ::BSP::CONTENTS_MOVEABLE | ::BSP::CONTENTS_OPAQUE
                     ));
+                }
+
+                Common::StaticPropLightingProp lightingProp;
+                lightingProp.propIndex =
+                    static_cast<size_t>(&prop - staticProps.props.data());
+                lightingProp.modelChecksum = mesh.checksum;
+                lightingProp.flags = prop.flags;
+                lightingProp.hasLightingOrigin =
+                    (prop.flags & ::BSP::STATIC_PROP_USE_LIGHTING_ORIGIN) != 0;
+                lightingProp.origin = Common::make_vec3(
+                    prop.origin.x,
+                    prop.origin.y,
+                    prop.origin.z
+                );
+                lightingProp.lightingOrigin = Common::make_vec3(
+                    prop.lightingOrigin.x,
+                    prop.lightingOrigin.y,
+                    prop.lightingOrigin.z
+                );
+
+                for (const StaticPropLightingMeshData& meshData : mesh.lightingMeshes) {
+                    if (meshData.vertices.empty()) {
+                        continue;
+                    }
+
+                    Common::StaticPropLightingMesh lightingMesh;
+                    lightingMesh.lod = meshData.lod;
+                    lightingMesh.vertices.reserve(meshData.vertices.size());
+                    lightingMesh.colors.resize(
+                        meshData.vertices.size(),
+                        Common::make_vec3(0.0f, 0.0f, 0.0f)
+                    );
+
+                    for (const Common::StaticPropLightingVertex& vertex : meshData.vertices) {
+                        lightingMesh.vertices.push_back(Common::StaticPropLightingVertex{
+                            transform_static_prop_point(vertex.pos, prop),
+                            transform_static_prop_normal(vertex.normal, prop)
+                        });
+                    }
+
+                    lightingProp.meshes.push_back(std::move(lightingMesh));
+                }
+
+                if (!lightingProp.meshes.empty()) {
+                    result.staticPropLightingProps.push_back(std::move(lightingProp));
                 }
             }
         }
@@ -959,7 +1143,9 @@ namespace SilkRAD::Core::Scene {
             }
         }
 
-        append_world_brush_triangles(sourceMap, result);
+        if (options.includeWorldBrushSideOccluders) {
+            append_world_brush_triangles(sourceMap, result);
+        }
 
         for (size_t faceIndex = 0; faceIndex < dispGeometry.size(); ++faceIndex) {
             const Geometry::DispGeometry& geometry = dispGeometry[faceIndex];

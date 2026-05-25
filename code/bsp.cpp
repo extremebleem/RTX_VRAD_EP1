@@ -126,7 +126,13 @@ namespace BSP {
                 face.set_lightmap_offset(m_lightSamples.size());
 
                 // The rest of the lightmap
-                for (size_t i=0; i<face.get_lightmap_size(); i++) {
+                size_t lightmapSize = face.get_lightmap_size();
+                if ((face.get_texinfo().flags & SURF_BUMPLIGHT) != 0
+                    && (face.get_texinfo().flags & SURF_NOLIGHT) == 0) {
+                    lightmapSize *= 4;
+                }
+
+                for (size_t i=0; i<lightmapSize; i++) {
                     m_lightSamples.push_back(RGBExp32 {0, 0, 0, 0});
                 }
             }
@@ -973,6 +979,35 @@ namespace BSP {
         return m_gameLumps;
     }
 
+    void BSP::set_extra_lump(
+        LumpType lumpID,
+        const std::vector<uint8_t>& data,
+        int32_t version
+    ) {
+        m_extraLumps[lumpID] = data;
+
+        Lump& headerLump = m_header.lumps[lumpID];
+        headerLump.version = version;
+        headerLump.fourCC[0] = 0;
+        headerLump.fourCC[1] = 0;
+        headerLump.fourCC[2] = 0;
+        headerLump.fourCC[3] = 0;
+    }
+
+    void BSP::clear_extra_lump(LumpType lumpID)
+    {
+        m_extraLumps.erase(lumpID);
+
+        Lump& headerLump = m_header.lumps[lumpID];
+        headerLump.fileOffset = 0;
+        headerLump.fileLen = 0;
+        headerLump.version = 0;
+        headerLump.fourCC[0] = 0;
+        headerLump.fourCC[1] = 0;
+        headerLump.fourCC[2] = 0;
+        headerLump.fourCC[3] = 0;
+    }
+
     void BSP::build_worldlights(void) {
         m_worldLights.clear();
 
@@ -1024,6 +1059,32 @@ namespace BSP {
             if (leaf.contents & CONTENTS_SOLID)
                 continue;
         }*/
+    }
+
+    uint32_t BSP::get_level_flags(void) const
+    {
+        auto it = m_extraLumps.find(LUMP_MAP_FLAGS);
+        if (it == m_extraLumps.end() || it->second.size() < sizeof(uint32_t)) {
+            return 0;
+        }
+
+        uint32_t flags = 0;
+        std::memcpy(&flags, it->second.data(), sizeof(uint32_t));
+        return flags;
+    }
+
+    void BSP::set_level_flags(uint32_t flags)
+    {
+        std::vector<uint8_t>& lump = m_extraLumps[LUMP_MAP_FLAGS];
+        lump.resize(sizeof(uint32_t));
+        std::memcpy(lump.data(), &flags, sizeof(uint32_t));
+
+        Lump& headerLump = m_header.lumps[LUMP_MAP_FLAGS];
+        headerLump.version = 0;
+        headerLump.fourCC[0] = 0;
+        headerLump.fourCC[1] = 0;
+        headerLump.fourCC[2] = 0;
+        headerLump.fourCC[3] = 0;
     }
 
 

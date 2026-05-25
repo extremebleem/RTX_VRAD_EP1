@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <string>
 #include <vector>
 
 #include "../../bsp.h"
@@ -22,6 +23,8 @@ namespace SilkRAD::Core::Lighting {
         size_t worldBrushTriangleCount = 0;
         size_t displacementTriangleCount = 0;
         size_t staticPropTriangleCount = 0;
+        size_t staticPropCount = 0;
+        size_t staticPropVertexCount = 0;
     };
 
     DirectLightingResult build_direct_lighting_inputs(
@@ -38,8 +41,14 @@ namespace SilkRAD::Core::Lighting {
     void compute_direct_lighting_runtime(
         ::BSP::BSP& bsp,
         ::CUDABSP::CUDABSP* pCudaBSP,
-        const RuntimeState& state,
+        RuntimeState& state,
         const std::vector<OptixRT::Triangle>& triangles,
         OptixRT::OptixSunLosTracer& tracer
+    );
+
+    void write_static_prop_direct_lighting(
+        ::BSP::BSP& bsp,
+        const RuntimeState& state,
+        const std::string& outputBspFilename
     );
 }

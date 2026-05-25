@@ -778,10 +778,18 @@ namespace BSP {
             const std::unordered_map<int32_t, std::vector<uint8_t>>&
                 get_extra_gamelumps(void) const;
             const std::map<int32_t, GameLump>& get_gamelumps(void) const;
+            void set_extra_lump(
+                LumpType lumpID,
+                const std::vector<uint8_t>& data,
+                int32_t version = 0
+            );
+            void clear_extra_lump(LumpType lumpID);
 
             void build_worldlights(void);
             void clear_baked_lighting(void);
             void init_ambient_samples(void);
+            uint32_t get_level_flags(void) const;
+            void set_level_flags(uint32_t flags);
 
             bool is_fullbright(void) const;
             void set_fullbright(bool fullbright);

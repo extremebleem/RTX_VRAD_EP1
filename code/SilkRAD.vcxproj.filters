@@ -42,6 +42,9 @@
     <ClInclude Include="core\state.h">
       <Filter>core</Filter>
     </ClInclude>
+    <ClInclude Include="core\debug_ply.h">
+      <Filter>core</Filter>
+    </ClInclude>
     <ClInclude Include="core\bsp\source_map.h">
       <Filter>core</Filter>
     </ClInclude>
@@ -58,6 +61,9 @@
       <Filter>core</Filter>
     </ClInclude>
     <ClInclude Include="core\lighting\ambient_lighting.h">
+      <Filter>core</Filter>
+    </ClInclude>
+    <ClInclude Include="core\lighting\bounce_lighting.h">
       <Filter>core</Filter>
     </ClInclude>
     <ClInclude Include="core\lighting\direct_lighting.h">
@@ -79,6 +85,9 @@
     <ClCompile Include="core\state.cpp">
       <Filter>core</Filter>
     </ClCompile>
+    <ClCompile Include="core\debug_ply.cpp">
+      <Filter>core</Filter>
+    </ClCompile>
     <ClCompile Include="core\bsp\source_map.cpp">
       <Filter>core</Filter>
     </ClCompile>
@@ -89,6 +98,9 @@
       <Filter>core</Filter>
     </ClCompile>
     <ClCompile Include="core\lighting\ambient_lighting.cpp">
+      <Filter>core</Filter>
+    </ClCompile>
+    <ClCompile Include="core\lighting\bounce_lighting.cpp">
       <Filter>core</Filter>
     </ClCompile>
     <ClCompile Include="core\lighting\direct_lighting.cpp">

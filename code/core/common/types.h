@@ -80,4 +80,25 @@ namespace SilkRAD::Core::Common {
     struct LuxelGrid {
         std::vector<ReceiverLuxel> values;
     };
+
+    struct StaticPropLightingVertex {
+        Vec3f pos;
+        Vec3f normal;
+    };
+
+    struct StaticPropLightingMesh {
+        size_t lod = 0;
+        std::vector<StaticPropLightingVertex> vertices;
+        std::vector<Vec3f> colors;
+    };
+
+    struct StaticPropLightingProp {
+        size_t propIndex = 0;
+        uint32_t modelChecksum = 0;
+        uint32_t flags = 0;
+        bool hasLightingOrigin = false;
+        Vec3f origin;
+        Vec3f lightingOrigin;
+        std::vector<StaticPropLightingMesh> meshes;
+    };
 }
